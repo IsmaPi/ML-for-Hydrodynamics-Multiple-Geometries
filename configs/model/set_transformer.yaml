@@ -1,0 +1,10 @@
+model_type: set_transformer
+input_dim: 15        # 3 (pos) + 3 (force) + 3 (prev_vel) + 6 (theta)
+hidden_dim: 128
+num_layers: 4
+output_dim: 3
+layer_norm: true
+dropout: 0.0
+num_heads: 4
+num_inducing_points: 32
+use_isab: true

@@ -1,0 +1,13 @@
+strategy: single
+batch_size: 32
+learning_rate: 0.001
+weight_decay: 0.00001
+num_epochs: 200
+scheduler: cosine
+warmup_epochs: 5
+gradient_clip: 1.0
+seed: 42
+log_every: 10
+eval_every: 5
+checkpoint_every: 20
+log_backend: tensorboard
