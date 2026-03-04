@@ -1,0 +1,17 @@
+model_type: torchmd_et
+# Node features: [force(3), theta(6)] — positions enter via data.pos for neighbor finding
+input_dim: 9
+hidden_dim: 128
+num_layers: 4
+output_dim: 3
+# TorchMD-NET neighbor list
+cutoff_radius: 5.0
+max_num_neighbors: 32
+neighbor_strategy: brute   # "brute" for N<=128, "cell" for N>1000
+# RBF distance encoding
+num_rbf: 32
+rbf_type: expnorm
+trainable_rbf: true
+# Equivariant Transformer attention
+num_heads: 8
+distance_influence: both   # attend over keys and values using distance info

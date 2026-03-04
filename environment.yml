@@ -1,0 +1,20 @@
+name: hydro-ml
+channels:
+  - pytorch
+  - pyg
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - scipy>=1.10
+  - pytorch>=2.1
+  - pytorch-cuda=12.1
+  - pyg::pyg>=2.5
+  - pyyaml>=6.0
+  - matplotlib>=3.7
+  - tensorboard>=2.15
+  - pip
+  - pip:
+      - wandb>=0.16
+      - torchmd-net>=2.6
