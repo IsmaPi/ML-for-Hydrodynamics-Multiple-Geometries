@@ -6,24 +6,45 @@ import numpy as np
 from torch_geometric.data import Data
 from typing import List
 
-from ..data.graph_construction import build_graph
+
+TORCHMD_MODELS = {"torchmd_gn", "torchmd_et"}
 
 
 def create_synthetic_input(
     N: int, input_dim: int, device: torch.device,
+    model_type: str = "torchmd_gn",
     graph_method: str = "knn", k: int = 16,
+    cutoff_radius: float = 30.0,
 ) -> Data:
-    """Create a synthetic PyG Data sample for profiling."""
-    pos = torch.randn(N, 3, device=device)
-    x = torch.randn(N, input_dim, device=device)
-    edge_index, edge_attr = build_graph(pos.cpu(), graph_method, k=k)
+    """Create a synthetic PyG Data sample for profiling.
 
-    data = Data(
-        x=x,
-        edge_index=edge_index.to(device),
-        edge_attr=edge_attr.to(device),
-        pos=pos,
-    )
+    Positions are spread over a box that scales with N so the average
+    neighbour count stays roughly constant and does not exceed
+    max_num_neighbors for TorchMD-NET models.
+    """
+    import math
+    # Scale box so average neighbor count stays below max_num_neighbors.
+    # neighbors ≈ n * (4/3)π * r_cut³ → V = N * (4/3)π * r_cut³ / target
+    target_neighbors = min(N - 1, 64)  # can't have more neighbors than particles
+    volume = N * (4.0 / 3.0) * math.pi * cutoff_radius**3 / max(target_neighbors, 1)
+    box_side = volume ** (1.0 / 3.0)
+    pos = torch.rand(N, 3, device=device) * box_side
+    x = torch.randn(N, input_dim, device=device)
+
+    if model_type in TORCHMD_MODELS:
+        # TorchMD models: no pre-built graph, just pos + x + batch
+        data = Data(x=x, pos=pos)
+    else:
+        # Legacy models: pre-build kNN graph
+        from ..data.graph_construction import build_graph
+        edge_index, edge_attr = build_graph(pos.cpu(), graph_method, k=k)
+        data = Data(
+            x=x,
+            edge_index=edge_index.to(device),
+            edge_attr=edge_attr.to(device),
+            pos=pos,
+        )
+
     data.batch = torch.zeros(N, dtype=torch.long, device=device)
     return data
 
@@ -34,8 +55,10 @@ def profile_scaling(
     input_dim: int,
     device: torch.device,
     N_values: List[int] = None,
+    model_type: str = "torchmd_gn",
     graph_method: str = "knn",
     k: int = 16,
+    cutoff_radius: float = 30.0,
     warmup_runs: int = 5,
     timed_runs: int = 50,
 ) -> dict:
@@ -50,7 +73,7 @@ def profile_scaling(
     results = {}
 
     for N in N_values:
-        data = create_synthetic_input(N, input_dim, device, graph_method, k)
+        data = create_synthetic_input(N, input_dim, device, model_type, graph_method, k, cutoff_radius)
 
         # Warmup
         for _ in range(warmup_runs):

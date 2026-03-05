@@ -2,12 +2,12 @@ strategy: single
 batch_size: 32
 learning_rate: 0.001
 weight_decay: 0.00001
-num_epochs: 500
+num_epochs: 5
 scheduler: cosine
-warmup_epochs: 5
+warmup_epochs: 1
 gradient_clip: 1.0
 seed: 42
-log_every: 10
-eval_every: 5
-checkpoint_every: 50
+log_every: 1
+eval_every: 2
+checkpoint_every: 3
 log_backend: tensorboard

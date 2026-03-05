@@ -4,19 +4,19 @@
 Usage:
     python scripts/evaluate.py \
         --data-config configs/data/mixed_all.yaml \
-        --model-config configs/model/gnn.yaml \
-        --checkpoint checkpoints/best.pt \
+        --model-config configs/model/torchmd_gn.yaml \
+        --checkpoint saved_models/torchmd_gn_single_geometry/run_001/best.pt \
         --eval-mode single_step
 
     python scripts/evaluate.py \
         --data-config configs/data/mixed_all.yaml \
-        --model-config configs/model/set_transformer.yaml \
-        --checkpoint checkpoints/best.pt \
+        --model-config configs/model/torchmd_et.yaml \
+        --checkpoint saved_models/torchmd_et_single_geometry/run_001/best.pt \
         --eval-mode generalization
 
     python scripts/evaluate.py \
-        --model-config configs/model/gnn.yaml \
-        --checkpoint checkpoints/best.pt \
+        --model-config configs/model/torchmd_gn.yaml \
+        --checkpoint saved_models/torchmd_gn_single_geometry/run_001/best.pt \
         --eval-mode scaling
 """
 
@@ -34,6 +34,8 @@ from src.data.dataset import HydrodynamicsDataset
 from src.data.normalization import FeatureNormalizer
 from src.models.gnn import HydroGNN
 from src.models.set_transformer import HydroSetTransformer
+from src.models.torchmd_gn import HydroTorchMD_GN
+from src.models.torchmd_et import HydroTorchMD_ET
 from src.training.trainer import load_checkpoint
 from src.evaluation.single_step import evaluate_single_step
 from src.evaluation.scaling import profile_scaling
@@ -46,6 +48,10 @@ def load_model(model_cfg, checkpoint_path, device):
         model = HydroGNN(model_cfg)
     elif model_cfg.model_type == "set_transformer":
         model = HydroSetTransformer(model_cfg)
+    elif model_cfg.model_type == "torchmd_gn":
+        model = HydroTorchMD_GN(model_cfg)
+    elif model_cfg.model_type == "torchmd_et":
+        model = HydroTorchMD_ET(model_cfg)
     else:
         raise ValueError(f"Unknown model type: {model_cfg.model_type}")
 
@@ -96,8 +102,8 @@ def main():
         print("Profiling scaling...")
         results = profile_scaling(
             model, model_cfg.input_dim, device,
-            graph_method=model_cfg.graph_method if model_cfg.model_type == "gnn" else "knn",
-            k=model_cfg.k_neighbors if model_cfg.model_type == "gnn" else 16,
+            model_type=model_cfg.model_type,
+            cutoff_radius=getattr(model_cfg, "cutoff_radius", 30.0),
         )
 
     elif args.eval_mode in ("single_step", "generalization"):
@@ -123,9 +129,6 @@ def main():
                 geometry_keys=[geo],
                 particle_counts=data_cfg.num_particles,
                 normalizer=normalizer,
-                graph_method=model_cfg.graph_method if model_cfg.model_type == "gnn" else "knn",
-                k_neighbors=model_cfg.k_neighbors if model_cfg.model_type == "gnn" else 16,
-                cutoff_radius=model_cfg.cutoff_radius if model_cfg.model_type == "gnn" else 5.0,
             )
             if len(ds) > 0:
                 geo_datasets[geo] = ds

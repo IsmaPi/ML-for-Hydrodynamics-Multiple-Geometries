@@ -25,6 +25,30 @@ import subprocess
 from pathlib import Path
 
 
+def _find_latest_run(base: str):
+    """Find the latest run_NNN under saved_models/<base>/.
+
+    Returns (run_name, checkpoint_path) or (None, None) if not found.
+    Also checks the old flat layout saved_models/<base>/best.pt as fallback.
+    """
+    parent = Path("saved_models") / base
+
+    # Check enumerated runs first
+    if parent.exists():
+        run_dirs = sorted(parent.glob("run_*"), reverse=True)
+        for d in run_dirs:
+            ckpt = d / "best.pt"
+            if ckpt.exists():
+                return f"{base}/{d.name}", str(ckpt)
+
+        # Fallback: flat layout (pre-enumeration runs)
+        flat_ckpt = parent / "best.pt"
+        if flat_ckpt.exists():
+            return base, str(flat_ckpt)
+
+    return None, None
+
+
 def run_cmd(cmd: list, description: str):
     """Run a command and print its output."""
     print(f"\n{'='*60}")
@@ -91,14 +115,13 @@ def main():
     # ----------------------------------------------------------------
     if args.stage in ("all", "train"):
         for model_name in models:
-            run_name = f"{model_name}_{strategy}"
             model_config = f"configs/model/{model_name}.yaml"
+            # Let train.py auto-enumerate the run name (run_001, run_002, ...)
             cmd = [
                 python, "scripts/train.py",
                 "--data-config", args.data_config,
                 "--model-config", model_config,
                 "--train-config", args.train_config,
-                "--run-name", run_name,
             ]
             run_cmd(cmd, f"Training {model_name} ({strategy})")
 
@@ -107,15 +130,13 @@ def main():
     # ----------------------------------------------------------------
     if args.stage in ("all", "evaluate"):
         for model_name in models:
-            run_name = f"{model_name}_{strategy}"
             model_config = f"configs/model/{model_name}.yaml"
-            checkpoint = f"saved_models/{run_name}/best.pt"
+            base = f"{model_name}_{strategy}"
 
-            if not Path(checkpoint).exists():
-                # Fallback to old location
-                checkpoint = "checkpoints/best.pt"
-            if not Path(checkpoint).exists():
-                print(f"Warning: no checkpoint found for {run_name}, skipping evaluation.")
+            # Find the latest enumerated run
+            run_name, checkpoint = _find_latest_run(base)
+            if checkpoint is None:
+                print(f"Warning: no checkpoint found for {base}, skipping evaluation.")
                 continue
 
             # Single-step evaluation
