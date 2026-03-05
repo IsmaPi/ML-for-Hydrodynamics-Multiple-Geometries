@@ -6,7 +6,7 @@ even when training on mixed-geometry data.
 Saves:
   - Training history (CSV) to results/<run_name>/history.csv
   - Best model to saved_models/<run_name>/best.pt
-  - Periodic checkpoints to checkpoints/
+  - Periodic checkpoints to saved_models/<run_name>/
 """
 
 import csv
@@ -50,7 +50,7 @@ class Trainer:
       - saved_models/<run_name>/best.pt   (best model weights)
       - results/<run_name>/history.csv    (per-epoch train/val losses)
       - results/<run_name>/summary.json   (final metrics summary)
-      - checkpoints/                      (periodic checkpoints)
+      - saved_models/<run_name>/epoch_NNNN.pt  (periodic checkpoints)
     """
 
     def __init__(
@@ -213,11 +213,6 @@ class Trainer:
                         self.model, self.optimizer, epoch,
                         val_results, str(self.model_dir / "best.pt"),
                     )
-                    # Also keep a copy in checkpoints/ for backwards compatibility
-                    save_checkpoint(
-                        self.model, self.optimizer, epoch,
-                        val_results, "checkpoints/best.pt",
-                    )
 
             # Record history row
             row = {"epoch": epoch, "train_loss": train_loss}
@@ -237,7 +232,7 @@ class Trainer:
             if epoch % self.config.checkpoint_every == 0:
                 save_checkpoint(
                     self.model, self.optimizer, epoch,
-                    {}, f"checkpoints/epoch_{epoch:04d}.pt",
+                    {}, str(self.model_dir / f"epoch_{epoch:04d}.pt"),
                 )
 
         # Save training history CSV

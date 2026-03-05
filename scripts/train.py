@@ -121,11 +121,32 @@ def build_model(model_cfg):
 
 
 def make_run_name(model_cfg, train_cfg) -> str:
-    """Generate a descriptive run name: {model_type}_{strategy}[_{leave_out}]."""
+    """Generate an enumerated run name: {model_type}_{strategy}/run_001.
+
+    Each run gets its own numbered subfolder under the base name,
+    so successive runs don't overwrite each other.
+    """
     parts = [model_cfg.model_type, train_cfg.strategy]
     if train_cfg.strategy == "leave_one_out" and train_cfg.leave_out_geometry:
         parts.append(f"lo_{train_cfg.leave_out_geometry}")
-    return "_".join(parts)
+    base = "_".join(parts)
+    return _next_enumerated_run(base)
+
+
+def _next_enumerated_run(base: str) -> str:
+    """Find the next available run_NNN under saved_models/<base>/."""
+    parent = Path("saved_models") / base
+    if not parent.exists():
+        return f"{base}/run_001"
+    existing = sorted(parent.glob("run_*"))
+    nums = []
+    for d in existing:
+        try:
+            nums.append(int(d.name.split("_")[1]))
+        except (IndexError, ValueError):
+            pass
+    next_num = max(nums, default=0) + 1
+    return f"{base}/run_{next_num:03d}"
 
 
 def main():
