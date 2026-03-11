@@ -54,8 +54,6 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
         train_geos = all_geos
         held_out_geos = []
 
-    use_torchmd = model_cfg.model_type in TORCHMD_MODELS
-
     # Load full dataset for training geometries
     full_dataset = HydrodynamicsDataset(
         data_dir=data_cfg.output_dir,
@@ -67,10 +65,9 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
     normalizer = compute_normalization_stats(full_dataset)
     normalizer.save("data/processed/normalizer.pt")
 
-    # Apply normalizer; precompute Data objects (skipped for torchMD — built on-the-fly)
+    # Apply normalizer; precompute and cache Data objects for faster epoch iteration
     full_dataset.normalizer = normalizer
-    if not use_torchmd:
-        full_dataset.precompute_graphs()
+    full_dataset.precompute_graphs()
     train_dataset, val_in_dist = split_dataset(full_dataset, train_ratio=0.8, seed=train_cfg.seed)
 
     # Build per-geometry validation datasets
@@ -84,8 +81,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
             particle_counts=particle_counts,
             normalizer=normalizer,
         )
-        if not use_torchmd:
-            geo_dataset.precompute_graphs()
+        geo_dataset.precompute_graphs()
         _, val_geo = split_dataset(geo_dataset, train_ratio=0.8, seed=train_cfg.seed)
         if len(val_geo) > 0:
             val_datasets[geo] = val_geo
@@ -98,8 +94,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
             particle_counts=particle_counts,
             normalizer=normalizer,
         )
-        if not use_torchmd:
-            held_ds.precompute_graphs()
+        held_ds.precompute_graphs()
         if len(held_ds) > 0:
             val_datasets[f"{geo}_OOD"] = held_ds
 
@@ -156,6 +151,8 @@ def main():
     parser.add_argument("--train-config", type=str, required=True)
     parser.add_argument("--run-name", type=str, default=None,
                         help="Custom run name (default: auto-generated from model+strategy)")
+    parser.add_argument("--leave-out-geometry", type=str, default=None,
+                        help="Override leave_out_geometry from training config")
     args = parser.parse_args()
 
     raw = merge_configs(
@@ -166,6 +163,9 @@ def main():
     data_cfg = build_data_config(raw)
     model_cfg = build_model_config(raw)
     train_cfg = build_training_config(raw)
+
+    if args.leave_out_geometry:
+        train_cfg.leave_out_geometry = args.leave_out_geometry
 
     run_name = args.run_name or make_run_name(model_cfg, train_cfg)
 

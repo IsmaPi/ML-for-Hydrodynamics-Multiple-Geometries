@@ -5,11 +5,11 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.11
+  - python>=3.11,<3.14
   - numpy>=1.24
   - scipy>=1.10
   - pytorch>=2.1
-  - pytorch-cuda=12.1
+  - pytorch-cuda
   - pyg::pyg>=2.5
   - pyyaml>=6.0
   - matplotlib>=3.7

@@ -11,11 +11,14 @@ from torch_geometric.data import Data
 
 from ..data.geometry import build_geometry_params, get_geometry_constraints
 from ..data.graph_construction import build_graph
+from ..data.dataset import make_box_vecs
 from ..data.generate import (
     sample_forces, enforce_boundaries,
     generate_trajectory,
 )
 from ..data.normalization import FeatureNormalizer
+
+TORCHMD_MODELS = {"torchmd_gn", "torchmd_et"}
 
 
 @torch.no_grad()
@@ -28,6 +31,7 @@ def evaluate_rollout(
     num_steps: int,
     dt: float,
     device: torch.device,
+    model_type: str = "torchmd_gn",
     graph_method: str = "knn",
     k_neighbors: int = 16,
     cutoff_radius: float = 5.0,
@@ -64,7 +68,15 @@ def evaluate_rollout(
     # Model rollout using the SAME initial conditions and forces
     pred_positions = np.zeros((num_steps + 1, N, 3))
     pred_positions[0] = true_traj["positions"][0]
-    prev_velocity = torch.zeros(N, 3, device=device)
+    use_torchmd = model_type in TORCHMD_MODELS
+
+    # Precompute box_vecs for TorchMD periodic models
+    if use_torchmd:
+        box_vecs = make_box_vecs(geometry_key, theta)
+        if box_vecs is not None:
+            box_vecs = box_vecs.to(device)
+    else:
+        prev_velocity = torch.zeros(N, 3, device=device)
 
     for n in range(num_steps):
         pos_np = pred_positions[n]
@@ -73,27 +85,42 @@ def evaluate_rollout(
         pos_t = torch.tensor(pos_np, dtype=torch.float32, device=device)
         forces_t = torch.tensor(forces_np, dtype=torch.float32, device=device)
 
-        # Build features
-        if normalizer:
-            pos_norm = normalizer.transform(pos_t.cpu(), "positions").to(device)
-            forces_norm = normalizer.transform(forces_t.cpu(), "forces").to(device)
-            prev_vel_norm = normalizer.transform(prev_velocity.cpu(), "velocities").to(device)
+        if use_torchmd:
+            # TorchMD path: features = [forces(3), theta(6)], no graph
+            if normalizer:
+                forces_norm = normalizer.transform(forces_t.cpu(), "forces").to(device)
+            else:
+                forces_norm = forces_t
+
+            node_features = torch.cat([forces_norm, theta_expanded], dim=-1)
+
+            data = Data(
+                x=node_features,
+                pos=pos_t,
+                box_vecs=box_vecs if box_vecs is not None else None,
+            )
+            data.batch = torch.zeros(N, dtype=torch.long, device=device)
         else:
-            pos_norm = pos_t
-            forces_norm = forces_t
-            prev_vel_norm = prev_velocity
+            # Legacy path: features = [pos, forces, prev_velocity, theta], build graph
+            if normalizer:
+                pos_norm = normalizer.transform(pos_t.cpu(), "positions").to(device)
+                forces_norm = normalizer.transform(forces_t.cpu(), "forces").to(device)
+                prev_vel_norm = normalizer.transform(prev_velocity.cpu(), "velocities").to(device)
+            else:
+                pos_norm = pos_t
+                forces_norm = forces_t
+                prev_vel_norm = prev_velocity
 
-        node_features = torch.cat([pos_norm, forces_norm, prev_vel_norm, theta_expanded], dim=-1)
+            node_features = torch.cat([pos_norm, forces_norm, prev_vel_norm, theta_expanded], dim=-1)
+            edge_index, edge_attr = build_graph(pos_t, graph_method, k_neighbors, cutoff_radius)
 
-        edge_index, edge_attr = build_graph(pos_t, graph_method, k_neighbors, cutoff_radius)
-
-        data = Data(
-            x=node_features,
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-            pos=pos_t,
-        ).to(device)
-        data.batch = torch.zeros(N, dtype=torch.long, device=device)
+            data = Data(
+                x=node_features,
+                edge_index=edge_index,
+                edge_attr=edge_attr,
+                pos=pos_t,
+            ).to(device)
+            data.batch = torch.zeros(N, dtype=torch.long, device=device)
 
         pred_disp = model(data)
 
@@ -105,7 +132,8 @@ def evaluate_rollout(
         pred_positions[n + 1] = pred_positions[n] + pred_disp
         pred_positions[n + 1] = enforce_boundaries(pred_positions[n + 1], geometry_key, config)
 
-        prev_velocity = torch.tensor(pred_disp / dt, dtype=torch.float32, device=device)
+        if not use_torchmd:
+            prev_velocity = torch.tensor(pred_disp / dt, dtype=torch.float32, device=device)
 
     true_positions = true_traj["positions"]
 

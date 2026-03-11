@@ -107,8 +107,12 @@ def main():
             cmd.extend(["--num-particles", str(args.num_particles)])
         run_cmd(cmd, "Generating training data")
 
-    # Derive strategy name from train config filename
-    strategy = Path(args.train_config).stem  # e.g. "single_geometry"
+    # Derive strategy from the YAML content to match train.py's make_run_name()
+    # train.py uses train_cfg.strategy (e.g. "single", "mixed", "leave_one_out")
+    import yaml
+    with open(args.train_config) as _f:
+        _train_raw = yaml.safe_load(_f) or {}
+    strategy = _train_raw.get("strategy", Path(args.train_config).stem)
 
     # ----------------------------------------------------------------
     # Stage 2: Train
