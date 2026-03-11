@@ -127,6 +127,8 @@ class Trainer:
             self.scheduler = None
 
         self.best_val_loss = float("inf")
+        self.patience = config.early_stopping_patience
+        self.epochs_without_improvement = 0
 
     def train_epoch(self, epoch: int) -> float:
         """Run one training epoch. Returns average loss."""
@@ -196,7 +198,7 @@ class Trainer:
             # Logging
             if epoch % self.config.log_every == 0:
                 self.logger.log_scalar("train/loss", train_loss, epoch)
-                print(f"Epoch {epoch}/{self.config.num_epochs} | train_loss={train_loss:.6f} | {epoch_time:.1f}s")
+            print(f"Epoch {epoch}/{self.config.num_epochs} | train_loss={train_loss:.6f} | {epoch_time:.1f}s")
 
             # Validation
             if epoch % self.config.eval_every == 0:
@@ -209,10 +211,24 @@ class Trainer:
                 avg_val = val_results.get("avg", float("inf"))
                 if avg_val < self.best_val_loss:
                     self.best_val_loss = avg_val
+                    self.epochs_without_improvement = 0
                     save_checkpoint(
                         self.model, self.optimizer, epoch,
                         val_results, str(self.model_dir / "best.pt"),
                     )
+                else:
+                    self.epochs_without_improvement += self.config.eval_every
+
+                # Early stopping
+                if self.patience > 0 and self.epochs_without_improvement >= self.patience:
+                    print(f"Early stopping at epoch {epoch} (no val improvement for {self.epochs_without_improvement} epochs)")
+                    self._save_history()
+                    self._save_summary(val_results)
+                    total_time = time.time() - t_start
+                    print(f"Training complete in {total_time:.1f}s. Best val loss: {self.best_val_loss:.6f}")
+                    print(f"Model saved to:   {self.model_dir / 'best.pt'}")
+                    print(f"Metrics saved to: {self.results_dir}/")
+                    return
 
             # Record history row
             row = {"epoch": epoch, "train_loss": train_loss}

@@ -25,6 +25,8 @@ import sys
 import json
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
@@ -40,6 +42,7 @@ from src.training.trainer import load_checkpoint
 from src.evaluation.single_step import evaluate_single_step
 from src.evaluation.scaling import profile_scaling
 from src.evaluation.generalization import evaluate_cross_geometry, print_generalization_report
+from src.evaluation.rollout import evaluate_rollout
 
 
 def load_model(model_cfg, checkpoint_path, device):
@@ -68,11 +71,17 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to model checkpoint (e.g. saved_models/gnn_single/best.pt)")
     parser.add_argument("--eval-mode", type=str, required=True,
-                        choices=["single_step", "generalization", "scaling"])
+                        choices=["single_step", "generalization", "scaling", "rollout"])
     parser.add_argument("--output", type=str, default=None,
                         help="Save results to JSON (default: results/<run_name>/eval_<mode>.json)")
     parser.add_argument("--run-name", type=str, default=None,
                         help="Run name for auto-saving results (derived from checkpoint path if omitted)")
+    parser.add_argument("--rollout-steps", type=int, default=50,
+                        help="Number of rollout steps (default: 50)")
+    parser.add_argument("--rollout-n", type=int, default=64,
+                        help="Number of particles for rollout (default: 64)")
+    parser.add_argument("--rollout-dt", type=float, default=0.01,
+                        help="Timestep for rollout (default: 0.01)")
     args = parser.parse_args()
 
     # Derive run_name from checkpoint path if not given: saved_models/<run_name>/best.pt
@@ -143,6 +152,54 @@ def main():
             results = evaluate_cross_geometry(model, geo_datasets, normalizer, device)
             print_generalization_report(results)
 
+    elif args.eval_mode == "rollout":
+        if args.data_config is None:
+            print("Error: --data-config required for rollout mode.")
+            sys.exit(1)
+
+        raw_data = load_yaml(args.data_config)
+        data_cfg = build_data_config(raw_data)
+
+        normalizer_path = "data/processed/normalizer.pt"
+        normalizer = None
+        if Path(normalizer_path).exists():
+            normalizer = FeatureNormalizer()
+            normalizer.load(normalizer_path)
+
+        all_trajectories = {}
+        for geo in data_cfg.geometries:
+            print(f"Rollout evaluation for {geo}...")
+            rollout_result = evaluate_rollout(
+                model=model,
+                geometry_key=geo,
+                config=raw_data,
+                normalizer=normalizer,
+                N=args.rollout_n,
+                num_steps=args.rollout_steps,
+                dt=args.rollout_dt,
+                device=device,
+                model_type=model_cfg.model_type,
+                cutoff_radius=getattr(model_cfg, "cutoff_radius", 30.0),
+            )
+
+            results[geo] = {
+                "per_step_error": rollout_result["per_step_error"].tolist(),
+                "cumulative_error": rollout_result["cumulative_error"].tolist(),
+            }
+            all_trajectories[geo] = {
+                "pred": rollout_result["pred_trajectory"],
+                "true": rollout_result["true_trajectory"],
+            }
+
+        # Save trajectories as npz
+        results_dir = Path(args.output).parent
+        traj_data = {}
+        for geo, trajs in all_trajectories.items():
+            traj_data[f"{geo}_pred"] = trajs["pred"]
+            traj_data[f"{geo}_true"] = trajs["true"]
+        np.savez(str(results_dir / "eval_rollout_trajectories.npz"), **traj_data)
+        print(f"Trajectories saved to {results_dir / 'eval_rollout_trajectories.npz'}")
+
     # Save results
     if args.output:
         # Convert numpy types for JSON serialization
@@ -155,7 +212,6 @@ def main():
                 return {k: convert(v) for k, v in obj.items()}
             return obj
 
-        import numpy as np
         with open(args.output, "w") as f:
             json.dump(convert(results), f, indent=2)
         print(f"Results saved to {args.output}")

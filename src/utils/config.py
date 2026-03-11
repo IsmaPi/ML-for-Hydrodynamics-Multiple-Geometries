@@ -86,6 +86,7 @@ class TrainingConfig:
     scheduler: str = "cosine"          # "cosine", "step", "plateau"
     warmup_epochs: int = 5
     gradient_clip: float = 1.0
+    early_stopping_patience: int = 50
     seed: int = 42
     log_every: int = 10
     eval_every: int = 5
