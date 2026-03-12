@@ -1,6 +1,6 @@
 # ML for Hydrodynamics: Generalization Across Multiple Geometries
 
-Applying Machine Learning to predict deterministic particle displacements in low-Reynolds-number hydrodynamics, comparing a **Graph Neural Network (GNN)** and a **Set Transformer** on their ability to generalize across multiple boundary geometries.
+Applying Machine Learning to predict deterministic particle displacements in low-Reynolds-number hydrodynamics, comparing a **SchNet-based GN** (TorchMD_GN) and an **Equivariant Transformer** (TorchMD_ET) on their ability to generalize across multiple boundary geometries.
 
 Supervised by Prof. R. P. Pelaez (Universidad Autonoma de Madrid / IE University).
 
@@ -34,7 +34,7 @@ conda activate hydro-ml
 python run.py --synthetic --data-config configs/data/nbody_open.yaml
 ```
 
-This will: generate synthetic data -> train a GNN -> evaluate it.
+This will: generate synthetic data -> train TorchMD_GN -> evaluate it.
 
 ### Run with both models
 
@@ -68,28 +68,28 @@ Training automatically saves:
 - **Summary metrics** to `results/<run_name>/summary.json`
 
 ```bash
-# Train GNN on a single geometry
+# Train SchNet (GN) on a single geometry
 python scripts/train.py \
     --data-config configs/data/nbody_open.yaml \
-    --model-config configs/model/gnn.yaml \
+    --model-config configs/model/torchmd_gn.yaml \
     --train-config configs/training/single_geometry.yaml
 
-# Train Set Transformer on mixed geometries
+# Train Equivariant Transformer on mixed geometries
 python scripts/train.py \
     --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/set_transformer.yaml \
+    --model-config configs/model/torchmd_et.yaml \
     --train-config configs/training/mixed_geometry.yaml
 
 # Leave-one-out generalization experiment
 python scripts/train.py \
     --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/gnn.yaml \
+    --model-config configs/model/torchmd_et.yaml \
     --train-config configs/training/leave_one_out.yaml
 
 # Custom run name
 python scripts/train.py \
     --data-config configs/data/nbody_open.yaml \
-    --model-config configs/model/gnn.yaml \
+    --model-config configs/model/torchmd_gn.yaml \
     --train-config configs/training/single_geometry.yaml \
     --run-name my_experiment
 ```
@@ -102,78 +102,30 @@ Evaluation loads models from `saved_models/` and writes results to `results/`.
 # Single-step accuracy per geometry
 python scripts/evaluate.py \
     --data-config configs/data/nbody_open.yaml \
-    --model-config configs/model/gnn.yaml \
-    --checkpoint saved_models/gnn_single_geometry/best.pt \
+    --model-config configs/model/torchmd_gn.yaml \
+    --checkpoint saved_models/torchmd_gn_single/run_001/best.pt \
     --eval-mode single_step
 
 # Cross-geometry generalization report
 python scripts/evaluate.py \
     --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/gnn.yaml \
-    --checkpoint saved_models/gnn_mixed_geometry/best.pt \
+    --model-config configs/model/torchmd_et.yaml \
+    --checkpoint saved_models/torchmd_et_mixed/run_001/best.pt \
     --eval-mode generalization
 
 # Scaling: inference time/memory vs number of particles
 python scripts/evaluate.py \
-    --model-config configs/model/gnn.yaml \
-    --checkpoint saved_models/gnn_single_geometry/best.pt \
+    --model-config configs/model/torchmd_et.yaml \
+    --checkpoint saved_models/torchmd_et_single/run_001/best.pt \
     --eval-mode scaling
 
 # Custom output path
 python scripts/evaluate.py \
     --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/gnn.yaml \
-    --checkpoint saved_models/gnn_mixed_geometry/best.pt \
+    --model-config configs/model/torchmd_et.yaml \
+    --checkpoint saved_models/torchmd_et_mixed/run_001/best.pt \
     --eval-mode generalization \
     --output my_results.json
-```
-
-## Project Structure
-
-```
-configs/                    # YAML configuration files
-  data/                     #   Data generation configs per geometry
-  model/                    #   Model architecture configs (GNN, Set Transformer)
-  training/                 #   Training strategy configs (single, mixed, leave-one-out)
-src/
-  data/
-    generate.py             # Trajectory generation (libMobility + synthetic fallback)
-    geometry.py             # Geometry/solver registry and theta vector construction
-    dataset.py              # PyTorch Dataset with PyG Data objects
-    normalization.py        # Per-feature mean/std normalization
-    graph_construction.py   # k-NN and radius graph builders
-  models/
-    gnn.py                  # Message-passing GNN (Eq. 10-12)
-    set_transformer.py      # Set Transformer with SAB/ISAB (Eq. 13)
-    common.py               # Shared MLP blocks
-  training/
-    trainer.py              # Training loop with per-geometry validation
-    losses.py               # Displacement MSE loss (Eq. 14)
-  evaluation/
-    single_step.py          # Single-step accuracy metrics
-    rollout.py              # Autoregressive rollout evaluation
-    scaling.py              # Inference time/memory profiling
-    generalization.py       # Cross-geometry generalization analysis
-  utils/
-    config.py               # YAML config loading + dataclasses
-    seed.py                 # Reproducibility utilities
-    logging.py              # wandb/tensorboard wrapper
-scripts/
-  generate_data.py          # CLI for data generation
-  train.py                  # CLI for training
-  evaluate.py               # CLI for evaluation
-run.py                      # Main script to run the full pipeline
-saved_models/               # Trained model weights (by run name)
-  gnn_single_geometry/
-    best.pt                 #   Best model checkpoint
-  set_transformer_mixed_geometry/
-    best.pt
-results/                    # Training metrics and evaluation results (by run name)
-  gnn_single_geometry/
-    history.csv             #   Per-epoch train/val losses
-    summary.json            #   Final training summary
-    eval_single_step.json   #   Single-step evaluation results
-    eval_scaling.json       #   Scaling profiling results
 ```
 
 ## Supported Geometries
@@ -195,8 +147,8 @@ results/                    # Training metrics and evaluation results (by run na
 
 All hyperparameters are in YAML config files under `configs/`. Key parameters:
 
-- `configs/model/gnn.yaml`: hidden_dim, num_layers, graph_method, k_neighbors
-- `configs/model/set_transformer.yaml`: hidden_dim, num_layers, num_heads, num_inducing_points
+- `configs/model/torchmd_gn.yaml`: hidden_dim, num_layers, cutoff_radius, num_rbf
+- `configs/model/torchmd_et.yaml`: hidden_dim, num_layers, num_heads, distance_influence
 - `configs/training/*.yaml`: learning_rate, batch_size, num_epochs, strategy
 
 ## License

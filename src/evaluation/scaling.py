@@ -1,8 +1,11 @@
 """Scaling evaluation: inference time and memory vs number of particles N."""
 
+import logging
 import time
 import torch
 import numpy as np
+
+log = logging.getLogger(__name__)
 from torch_geometric.data import Data
 from typing import List
 
@@ -31,20 +34,7 @@ def create_synthetic_input(
     pos = torch.rand(N, 3, device=device) * box_side
     x = torch.randn(N, input_dim, device=device)
 
-    if model_type in TORCHMD_MODELS:
-        # TorchMD models: no pre-built graph, just pos + x + batch
-        data = Data(x=x, pos=pos)
-    else:
-        # Legacy models: pre-build kNN graph
-        from ..data.graph_construction import build_graph
-        edge_index, edge_attr = build_graph(pos.cpu(), graph_method, k=k)
-        data = Data(
-            x=x,
-            edge_index=edge_index.to(device),
-            edge_attr=edge_attr.to(device),
-            pos=pos,
-        )
-
+    data = Data(x=x, pos=pos)
     data.batch = torch.zeros(N, dtype=torch.long, device=device)
     return data
 
@@ -96,6 +86,6 @@ def profile_scaling(
             peak_mem_mb = 0.0
 
         results[N] = {"time_ms": elapsed_ms, "memory_mb": peak_mem_mb}
-        print(f"  N={N}: {elapsed_ms:.2f} ms, {peak_mem_mb:.1f} MB")
+        log.info("  N=%d: %.2f ms, %.1f MB", N, elapsed_ms, peak_mem_mb)
 
     return results

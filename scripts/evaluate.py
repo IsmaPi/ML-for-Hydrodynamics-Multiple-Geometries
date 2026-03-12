@@ -21,34 +21,35 @@ Usage:
 """
 
 import argparse
-import sys
 import json
+import logging
+import sys
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from src.utils.config import load_yaml, merge_configs, build_data_config, build_model_config
+from src.utils.config import load_yaml, merge_configs, build_data_config, build_model_config, DEFAULT_NORMALIZER_PATH
 from src.utils.seed import set_seed
 from src.data.dataset import HydrodynamicsDataset
 from src.data.normalization import FeatureNormalizer
-from src.models.gnn import HydroGNN
-from src.models.set_transformer import HydroSetTransformer
 from src.models.torchmd_gn import HydroTorchMD_GN
 from src.models.torchmd_et import HydroTorchMD_ET
 from src.training.trainer import load_checkpoint
 from src.evaluation.single_step import evaluate_single_step
 from src.evaluation.scaling import profile_scaling
 from src.evaluation.generalization import evaluate_cross_geometry, print_generalization_report
+from src.evaluation.rollout import evaluate_rollout
+
+
+log = logging.getLogger(__name__)
 
 
 def load_model(model_cfg, checkpoint_path, device):
     """Load trained model from checkpoint."""
-    if model_cfg.model_type == "gnn":
-        model = HydroGNN(model_cfg)
-    elif model_cfg.model_type == "set_transformer":
-        model = HydroSetTransformer(model_cfg)
-    elif model_cfg.model_type == "torchmd_gn":
+    if model_cfg.model_type == "torchmd_gn":
         model = HydroTorchMD_GN(model_cfg)
     elif model_cfg.model_type == "torchmd_et":
         model = HydroTorchMD_ET(model_cfg)
@@ -66,14 +67,21 @@ def main():
     parser.add_argument("--data-config", type=str, default=None)
     parser.add_argument("--model-config", type=str, required=True)
     parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to model checkpoint (e.g. saved_models/gnn_single/best.pt)")
+                        help="Path to model checkpoint (e.g. saved_models/torchmd_gn_single/run_001/best.pt)")
     parser.add_argument("--eval-mode", type=str, required=True,
-                        choices=["single_step", "generalization", "scaling"])
+                        choices=["single_step", "generalization", "scaling", "rollout"])
     parser.add_argument("--output", type=str, default=None,
                         help="Save results to JSON (default: results/<run_name>/eval_<mode>.json)")
     parser.add_argument("--run-name", type=str, default=None,
                         help="Run name for auto-saving results (derived from checkpoint path if omitted)")
+    parser.add_argument("--rollout-steps", type=int, default=50,
+                        help="Number of rollout steps (default: 50)")
+    parser.add_argument("--rollout-n", type=int, default=64,
+                        help="Number of particles for rollout (default: 64)")
+    parser.add_argument("--rollout-dt", type=float, default=0.01,
+                        help="Timestep for rollout (default: 0.01)")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     # Derive run_name from checkpoint path if not given: saved_models/<run_name>/best.pt
     if args.run_name is None:
@@ -99,7 +107,7 @@ def main():
     results = {}
 
     if args.eval_mode == "scaling":
-        print("Profiling scaling...")
+        log.info("Profiling scaling...")
         results = profile_scaling(
             model, model_cfg.input_dim, device,
             model_type=model_cfg.model_type,
@@ -108,14 +116,16 @@ def main():
 
     elif args.eval_mode in ("single_step", "generalization"):
         if args.data_config is None:
-            print("Error: --data-config required for single_step/generalization modes.")
+            log.error("--data-config required for single_step/generalization modes.")
             sys.exit(1)
 
         raw_data = load_yaml(args.data_config)
         data_cfg = build_data_config(raw_data)
 
-        # Load normalizer
-        normalizer_path = "data/processed/normalizer.pt"
+        # Load normalizer: z-score stats (mean, std) computed on training data
+        # during train.py. Used to scale inputs (forces, theta) and denormalize
+        # predicted displacements back to physical units.
+        normalizer_path = DEFAULT_NORMALIZER_PATH
         normalizer = None
         if Path(normalizer_path).exists():
             normalizer = FeatureNormalizer()
@@ -136,12 +146,61 @@ def main():
         if args.eval_mode == "single_step":
             for geo, ds in geo_datasets.items():
                 metrics = evaluate_single_step(model, ds, normalizer, device)
-                print(f"{geo}: MSE={metrics['mse']:.6e} MAE={metrics['mae']:.6e} RelErr={metrics['relative_error']:.4f}")
+                log.info("%s: MSE=%.6e MAE=%.6e RelErr=%.4f", geo, metrics["mse"], metrics["mae"], metrics["relative_error"])
                 results[geo] = metrics
 
         elif args.eval_mode == "generalization":
             results = evaluate_cross_geometry(model, geo_datasets, normalizer, device)
             print_generalization_report(results)
+
+    elif args.eval_mode == "rollout":
+        if args.data_config is None:
+            log.error("--data-config required for rollout mode.")
+            sys.exit(1)
+
+        raw_data = load_yaml(args.data_config)
+        data_cfg = build_data_config(raw_data)
+
+        # Load normalizer (see comment above for single_step/generalization)
+        normalizer_path = DEFAULT_NORMALIZER_PATH
+        normalizer = None
+        if Path(normalizer_path).exists():
+            normalizer = FeatureNormalizer()
+            normalizer.load(normalizer_path)
+
+        all_rollouts = {}
+        for geo in data_cfg.geometries:
+            log.info("Rollout evaluation for %s...", geo)
+            rollout_result = evaluate_rollout(
+                model=model,
+                geometry_key=geo,
+                config=raw_data,
+                normalizer=normalizer,
+                N=args.rollout_n,
+                num_steps=args.rollout_steps,
+                dt=args.rollout_dt,
+                device=device,
+                model_type=model_cfg.model_type,
+                cutoff_radius=getattr(model_cfg, "cutoff_radius", 30.0),
+            )
+
+            results[geo] = {
+                "per_step_error": rollout_result["per_step_error"].tolist(),
+                "cumulative_error": rollout_result["cumulative_error"].tolist(),
+            }
+            all_rollouts[geo] = {
+                "pred": rollout_result["pred_positions"],
+                "true": rollout_result["true_positions"],
+            }
+
+        # Save rollout positions as npz
+        results_dir = Path(args.output).parent
+        rollout_data = {}
+        for geo, rollout in all_rollouts.items():
+            rollout_data[f"{geo}_pred"] = rollout["pred"]
+            rollout_data[f"{geo}_true"] = rollout["true"]
+        np.savez(str(results_dir / "eval_rollout_positions.npz"), **rollout_data)
+        log.info("Rollout positions saved to %s", results_dir / "eval_rollout_positions.npz")
 
     # Save results
     if args.output:
@@ -155,10 +214,9 @@ def main():
                 return {k: convert(v) for k, v in obj.items()}
             return obj
 
-        import numpy as np
         with open(args.output, "w") as f:
             json.dump(convert(results), f, indent=2)
-        print(f"Results saved to {args.output}")
+        log.info("Results saved to %s", args.output)
 
 
 if __name__ == "__main__":

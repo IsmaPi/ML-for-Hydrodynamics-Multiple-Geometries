@@ -4,6 +4,8 @@ from typing import Optional, List, Dict, Any
 
 import yaml
 
+DEFAULT_NORMALIZER_PATH = "data/processed/normalizer.pt"
+
 
 # ---------------------------------------------------------------------------
 # Geometry configuration
@@ -48,22 +50,15 @@ class DataConfig:
 # ---------------------------------------------------------------------------
 @dataclass
 class ModelConfig:
-    model_type: str = "gnn"            # "gnn", "set_transformer", "torchmd_gn", "torchmd_et"
-    input_dim: int = 9                 # [force(3), theta(6)] for torchMD; override in legacy YAML
+    model_type: str = "torchmd_gn"     # "torchmd_gn" or "torchmd_et"
+    input_dim: int = 9                 # [force(3), theta(6)]
     hidden_dim: int = 128
     num_layers: int = 4
     output_dim: int = 3                # 3D translational displacement
     layer_norm: bool = True
     dropout: float = 0.0
-    # Legacy GNN-specific
-    graph_method: str = "knn"          # "knn" or "radius"
-    k_neighbors: int = 16
-    cutoff_radius: float = 5.0
-    # Legacy Set Transformer-specific
-    num_heads: int = 4
-    num_inducing_points: int = 32
-    use_isab: bool = True
     # TorchMD-NET specific
+    cutoff_radius: float = 30.0
     num_rbf: int = 32
     rbf_type: str = "expnorm"
     trainable_rbf: bool = True
@@ -86,6 +81,7 @@ class TrainingConfig:
     scheduler: str = "cosine"          # "cosine", "step", "plateau"
     warmup_epochs: int = 5
     gradient_clip: float = 1.0
+    early_stopping_patience: int = 50
     seed: int = 42
     log_every: int = 10
     eval_every: int = 5

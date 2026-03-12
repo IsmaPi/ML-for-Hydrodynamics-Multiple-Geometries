@@ -10,30 +10,31 @@ Usage:
 
     # Only specific stages
     python run.py --stage generate --synthetic
-    python run.py --stage train --model gnn
-    python run.py --stage evaluate --model gnn
+    python run.py --stage train --model torchmd_gn
+    python run.py --stage evaluate --model torchmd_gn
 
     # Custom configs
     python run.py --data-config configs/data/mixed_all.yaml \
-                  --model gnn \
+                  --model torchmd_gn \
                   --train-config configs/training/leave_one_out.yaml
 """
 
 import argparse
+import logging
 import sys
 import subprocess
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def _find_latest_run(base: str):
     """Find the latest run_NNN under saved_models/<base>/.
 
     Returns (run_name, checkpoint_path) or (None, None) if not found.
-    Also checks the old flat layout saved_models/<base>/best.pt as fallback.
     """
     parent = Path("saved_models") / base
 
-    # Check enumerated runs first
     if parent.exists():
         run_dirs = sorted(parent.glob("run_*"), reverse=True)
         for d in run_dirs:
@@ -41,22 +42,15 @@ def _find_latest_run(base: str):
             if ckpt.exists():
                 return f"{base}/{d.name}", str(ckpt)
 
-        # Fallback: flat layout (pre-enumeration runs)
-        flat_ckpt = parent / "best.pt"
-        if flat_ckpt.exists():
-            return base, str(flat_ckpt)
-
     return None, None
 
 
 def run_cmd(cmd: list, description: str):
-    """Run a command and print its output."""
-    print(f"\n{'='*60}")
-    print(f"  {description}")
-    print(f"{'='*60}\n")
+    """Run a command and log its output."""
+    log.info("\n%s\n  %s\n%s\n", "=" * 60, description, "=" * 60)
     result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
     if result.returncode != 0:
-        print(f"\nFailed: {description}")
+        log.error("Failed: %s", description)
         sys.exit(result.returncode)
 
 
@@ -72,7 +66,7 @@ def main():
     )
     parser.add_argument(
         "--model", type=str, default="torchmd_gn",
-        choices=["gnn", "set_transformer", "torchmd_gn", "torchmd_et", "both"],
+        choices=["torchmd_gn", "torchmd_et", "both"],
         help="Which model to train/evaluate (default: torchmd_gn)",
     )
     parser.add_argument(
@@ -91,7 +85,18 @@ def main():
         "--num-particles", type=int, default=None,
         help="Override particle count (single N value)",
     )
+    parser.add_argument(
+        "--leave-out-geometry", type=str, default=None,
+        help="Override leave_out_geometry in training config (e.g. nbody_open)",
+    )
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    # Resolve short config names (e.g. "mixed_all" -> "configs/data/mixed_all.yaml")
+    sys.path.insert(0, str(Path(__file__).parent))
+    from src.utils.config import resolve_config_path
+    args.data_config = resolve_config_path(args.data_config, "data")
+    args.train_config = resolve_config_path(args.train_config, "training")
 
     python = sys.executable
     models = ["torchmd_gn", "torchmd_et"] if args.model == "both" else [args.model]
@@ -107,8 +112,12 @@ def main():
             cmd.extend(["--num-particles", str(args.num_particles)])
         run_cmd(cmd, "Generating training data")
 
-    # Derive strategy name from train config filename
-    strategy = Path(args.train_config).stem  # e.g. "single_geometry"
+    # Derive strategy from the YAML content to match train.py's make_run_name()
+    # train.py uses train_cfg.strategy (e.g. "single", "mixed", "leave_one_out")
+    import yaml
+    with open(args.train_config) as _f:
+        _train_raw = yaml.safe_load(_f) or {}
+    strategy = _train_raw.get("strategy", Path(args.train_config).stem)
 
     # ----------------------------------------------------------------
     # Stage 2: Train
@@ -123,6 +132,8 @@ def main():
                 "--model-config", model_config,
                 "--train-config", args.train_config,
             ]
+            if args.leave_out_geometry:
+                cmd.extend(["--leave-out-geometry", args.leave_out_geometry])
             run_cmd(cmd, f"Training {model_name} ({strategy})")
 
     # ----------------------------------------------------------------
@@ -136,7 +147,7 @@ def main():
             # Find the latest enumerated run
             run_name, checkpoint = _find_latest_run(base)
             if checkpoint is None:
-                print(f"Warning: no checkpoint found for {base}, skipping evaluation.")
+                log.warning("No checkpoint found for %s, skipping evaluation.", base)
                 continue
 
             # Single-step evaluation
@@ -160,9 +171,7 @@ def main():
             ]
             run_cmd(cmd, f"Evaluating {model_name} (scaling)")
 
-    print("\n" + "=" * 60)
-    print("  Pipeline complete!")
-    print("=" * 60)
+    log.info("\n%s\n  Pipeline complete!\n%s", "=" * 60, "=" * 60)
 
 
 if __name__ == "__main__":
