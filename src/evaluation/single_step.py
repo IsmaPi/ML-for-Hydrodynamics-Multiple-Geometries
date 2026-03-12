@@ -15,6 +15,7 @@ def evaluate_single_step(
     normalizer: Optional[FeatureNormalizer],
     device: torch.device,
     batch_size: int = 32,
+    return_per_sample: bool = False,
 ) -> dict:
     """Evaluate single-step prediction accuracy.
 
@@ -56,4 +57,12 @@ def evaluate_single_step(
     err_norm = torch.norm(all_pred - all_true, dim=-1)
     relative_error = (err_norm / (true_norm + 1e-8)).mean().item()
 
-    return {"mse": mse, "mae": mae, "relative_error": relative_error}
+    result = {"mse": mse, "mae": mae, "relative_error": relative_error}
+
+    if return_per_sample:
+        per_sample_mse = ((all_pred - all_true) ** 2).mean(dim=-1)
+        per_sample_rel = err_norm / (true_norm + 1e-8)
+        result["per_sample_mse"] = per_sample_mse.numpy().tolist()
+        result["per_sample_rel_error"] = per_sample_rel.numpy().tolist()
+
+    return result

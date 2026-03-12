@@ -1,11 +1,12 @@
 strategy: single
-batch_size: 32
-learning_rate: 0.001
-weight_decay: 0.00001
+batch_size: 64
+learning_rate: 0.0002
+weight_decay: 0.001
 num_epochs: 500
 scheduler: cosine
-warmup_epochs: 5
-gradient_clip: 1.0
+warmup_epochs: 20
+gradient_clip: 0.5
+early_stopping_patience: 50
 seed: 42
 log_every: 10
 eval_every: 5

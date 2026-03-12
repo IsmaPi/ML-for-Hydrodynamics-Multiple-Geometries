@@ -1,8 +1,8 @@
 model_type: torchmd_gn
 # Node features: [force(3), theta(6)] — positions enter via data.pos for neighbor finding
 input_dim: 9
-hidden_dim: 256
-num_layers: 4
+hidden_dim: 128
+num_layers: 3
 output_dim: 3
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0

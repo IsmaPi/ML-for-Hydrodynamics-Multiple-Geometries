@@ -4,9 +4,13 @@ Computes a generalization matrix: how well a model trained on some
 geometries performs when tested on each geometry individually.
 """
 
+import logging
+
 import numpy as np
 import torch
 from typing import Dict, Optional
+
+log = logging.getLogger(__name__)
 
 from .single_step import evaluate_single_step
 from ..data.normalization import FeatureNormalizer
@@ -55,23 +59,21 @@ def evaluate_cross_geometry(
 
 
 def print_generalization_report(results: dict):
-    """Pretty-print the generalization evaluation results."""
-    print("\n" + "=" * 60)
-    print("Cross-Geometry Generalization Report")
-    print("=" * 60)
+    """Log the generalization evaluation results."""
+    log.info("\n%s\nCross-Geometry Generalization Report\n%s", "=" * 60, "=" * 60)
 
     for geo, metrics in results.items():
         if geo == "generalization_summary":
             continue
-        print(f"\n  {geo}:")
-        print(f"    MSE:            {metrics['mse']:.6e}")
-        print(f"    MAE:            {metrics['mae']:.6e}")
-        print(f"    Relative Error: {metrics['relative_error']:.4f}")
+        log.info("  %s:", geo)
+        log.info("    MSE:            %.6e", metrics["mse"])
+        log.info("    MAE:            %.6e", metrics["mae"])
+        log.info("    Relative Error: %.4f", metrics["relative_error"])
 
     if "generalization_summary" in results:
         summary = results["generalization_summary"]
-        print(f"\n  Summary:")
-        print(f"    Avg MSE:  {summary['avg_mse']:.6e} +/- {summary['std_mse']:.6e}")
-        print(f"    Best:     {summary['best_geometry']} ({summary['min_mse']:.6e})")
-        print(f"    Worst:    {summary['worst_geometry']} ({summary['max_mse']:.6e})")
-    print("=" * 60)
+        log.info("  Summary:")
+        log.info("    Avg MSE:  %.6e +/- %.6e", summary["avg_mse"], summary["std_mse"])
+        log.info("    Best:     %s (%.6e)", summary["best_geometry"], summary["min_mse"])
+        log.info("    Worst:    %s (%.6e)", summary["worst_geometry"], summary["max_mse"])
+    log.info("=" * 60)
