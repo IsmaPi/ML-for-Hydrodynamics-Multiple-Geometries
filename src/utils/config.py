@@ -92,6 +92,29 @@ class TrainingConfig:
 # ---------------------------------------------------------------------------
 # YAML loading helpers
 # ---------------------------------------------------------------------------
+def resolve_config_path(value: str, config_type: str) -> str:
+    """Resolve short config names to full paths.
+
+    Accepts both full paths and short names. Short names are resolved to
+    configs/<config_type>/<name>.yaml.
+
+    Args:
+        value: Config path or short name (e.g. "mixed_all" or "configs/data/mixed_all.yaml")
+        config_type: One of "data", "model", "training"
+
+    Examples:
+        resolve_config_path("mixed_all", "data") -> "configs/data/mixed_all.yaml"
+        resolve_config_path("configs/data/mixed_all.yaml", "data") -> "configs/data/mixed_all.yaml"
+    """
+    p = Path(value)
+    if p.exists():
+        return value
+    candidate = Path("configs") / config_type / (p.stem + ".yaml")
+    if candidate.exists():
+        return str(candidate)
+    return value
+
+
 def load_yaml(path: str) -> dict:
     """Load a YAML config file."""
     with open(path, "r") as f:

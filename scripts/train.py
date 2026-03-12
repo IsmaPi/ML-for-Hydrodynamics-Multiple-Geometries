@@ -24,6 +24,7 @@ from src.utils.config import (
     load_yaml, merge_configs,
     build_data_config, build_model_config, build_training_config,
     DEFAULT_NORMALIZER_PATH,
+    resolve_config_path,
 )
 from src.utils.seed import set_seed
 from src.utils.logging import Logger
@@ -152,6 +153,11 @@ def main():
     parser.add_argument("--leave-out-geometry", type=str, default=None,
                         help="Override leave_out_geometry from training config")
     args = parser.parse_args()
+
+    # Resolve short config names (e.g. "mixed_all" -> "configs/data/mixed_all.yaml")
+    args.data_config = resolve_config_path(args.data_config, "data")
+    args.model_config = resolve_config_path(args.model_config, "model")
+    args.train_config = resolve_config_path(args.train_config, "training")
 
     raw = merge_configs(
         load_yaml(args.data_config),
