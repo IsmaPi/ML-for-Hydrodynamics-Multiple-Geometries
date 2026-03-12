@@ -4,12 +4,12 @@
 Usage:
     python scripts/train.py \
         --data-config configs/data/mixed_all.yaml \
-        --model-config configs/model/gnn.yaml \
+        --model-config configs/model/torchmd_gn.yaml \
         --train-config configs/training/mixed_geometry.yaml
 
     python scripts/train.py \
         --data-config configs/data/nbody_open.yaml \
-        --model-config configs/model/set_transformer.yaml \
+        --model-config configs/model/torchmd_et.yaml \
         --train-config configs/training/single_geometry.yaml
 """
 
@@ -28,13 +28,9 @@ from src.utils.logging import Logger
 from src.data.dataset import (
     HydrodynamicsDataset, compute_normalization_stats, split_dataset,
 )
-from src.models.gnn import HydroGNN
-from src.models.set_transformer import HydroSetTransformer
 from src.models.torchmd_gn import HydroTorchMD_GN
 from src.models.torchmd_et import HydroTorchMD_ET
 from src.training.trainer import Trainer
-
-TORCHMD_MODELS = {"torchmd_gn", "torchmd_et"}
 
 
 def build_datasets(data_cfg, model_cfg, train_cfg):
@@ -67,7 +63,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
 
     # Apply normalizer; precompute and cache Data objects for faster epoch iteration
     full_dataset.normalizer = normalizer
-    full_dataset.precompute_graphs()
+    full_dataset.precompute_data()
     train_dataset, val_in_dist = split_dataset(full_dataset, train_ratio=0.8, seed=train_cfg.seed)
 
     # Build per-geometry validation datasets
@@ -81,7 +77,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
             particle_counts=particle_counts,
             normalizer=normalizer,
         )
-        geo_dataset.precompute_graphs()
+        geo_dataset.precompute_data()
         _, val_geo = split_dataset(geo_dataset, train_ratio=0.8, seed=train_cfg.seed)
         if len(val_geo) > 0:
             val_datasets[geo] = val_geo
@@ -94,7 +90,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
             particle_counts=particle_counts,
             normalizer=normalizer,
         )
-        held_ds.precompute_graphs()
+        held_ds.precompute_data()
         if len(held_ds) > 0:
             val_datasets[f"{geo}_OOD"] = held_ds
 
@@ -103,11 +99,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
 
 def build_model(model_cfg):
     """Instantiate model from config."""
-    if model_cfg.model_type == "gnn":
-        return HydroGNN(model_cfg)
-    elif model_cfg.model_type == "set_transformer":
-        return HydroSetTransformer(model_cfg)
-    elif model_cfg.model_type == "torchmd_gn":
+    if model_cfg.model_type == "torchmd_gn":
         return HydroTorchMD_GN(model_cfg)
     elif model_cfg.model_type == "torchmd_et":
         return HydroTorchMD_ET(model_cfg)

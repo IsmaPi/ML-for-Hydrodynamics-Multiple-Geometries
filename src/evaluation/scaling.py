@@ -31,20 +31,7 @@ def create_synthetic_input(
     pos = torch.rand(N, 3, device=device) * box_side
     x = torch.randn(N, input_dim, device=device)
 
-    if model_type in TORCHMD_MODELS:
-        # TorchMD models: no pre-built graph, just pos + x + batch
-        data = Data(x=x, pos=pos)
-    else:
-        # Legacy models: pre-build kNN graph
-        from ..data.graph_construction import build_graph
-        edge_index, edge_attr = build_graph(pos.cpu(), graph_method, k=k)
-        data = Data(
-            x=x,
-            edge_index=edge_index.to(device),
-            edge_attr=edge_attr.to(device),
-            pos=pos,
-        )
-
+    data = Data(x=x, pos=pos)
     data.batch = torch.zeros(N, dtype=torch.long, device=device)
     return data
 

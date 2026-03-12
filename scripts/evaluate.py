@@ -34,8 +34,6 @@ from src.utils.config import load_yaml, merge_configs, build_data_config, build_
 from src.utils.seed import set_seed
 from src.data.dataset import HydrodynamicsDataset
 from src.data.normalization import FeatureNormalizer
-from src.models.gnn import HydroGNN
-from src.models.set_transformer import HydroSetTransformer
 from src.models.torchmd_gn import HydroTorchMD_GN
 from src.models.torchmd_et import HydroTorchMD_ET
 from src.training.trainer import load_checkpoint
@@ -47,11 +45,7 @@ from src.evaluation.rollout import evaluate_rollout
 
 def load_model(model_cfg, checkpoint_path, device):
     """Load trained model from checkpoint."""
-    if model_cfg.model_type == "gnn":
-        model = HydroGNN(model_cfg)
-    elif model_cfg.model_type == "set_transformer":
-        model = HydroSetTransformer(model_cfg)
-    elif model_cfg.model_type == "torchmd_gn":
+    if model_cfg.model_type == "torchmd_gn":
         model = HydroTorchMD_GN(model_cfg)
     elif model_cfg.model_type == "torchmd_et":
         model = HydroTorchMD_ET(model_cfg)
@@ -69,7 +63,7 @@ def main():
     parser.add_argument("--data-config", type=str, default=None)
     parser.add_argument("--model-config", type=str, required=True)
     parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to model checkpoint (e.g. saved_models/gnn_single/best.pt)")
+                        help="Path to model checkpoint (e.g. saved_models/torchmd_gn_single/run_001/best.pt)")
     parser.add_argument("--eval-mode", type=str, required=True,
                         choices=["single_step", "generalization", "scaling", "rollout"])
     parser.add_argument("--output", type=str, default=None,
@@ -123,7 +117,9 @@ def main():
         raw_data = load_yaml(args.data_config)
         data_cfg = build_data_config(raw_data)
 
-        # Load normalizer
+        # Load normalizer: z-score stats (mean, std) computed on training data
+        # during train.py. Used to scale inputs (forces, theta) and denormalize
+        # predicted displacements back to physical units.
         normalizer_path = "data/processed/normalizer.pt"
         normalizer = None
         if Path(normalizer_path).exists():
@@ -160,6 +156,7 @@ def main():
         raw_data = load_yaml(args.data_config)
         data_cfg = build_data_config(raw_data)
 
+        # Load normalizer (see comment above for single_step/generalization)
         normalizer_path = "data/processed/normalizer.pt"
         normalizer = None
         if Path(normalizer_path).exists():

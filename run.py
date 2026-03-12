@@ -10,12 +10,12 @@ Usage:
 
     # Only specific stages
     python run.py --stage generate --synthetic
-    python run.py --stage train --model gnn
-    python run.py --stage evaluate --model gnn
+    python run.py --stage train --model torchmd_gn
+    python run.py --stage evaluate --model torchmd_gn
 
     # Custom configs
     python run.py --data-config configs/data/mixed_all.yaml \
-                  --model gnn \
+                  --model torchmd_gn \
                   --train-config configs/training/leave_one_out.yaml
 """
 
@@ -29,22 +29,15 @@ def _find_latest_run(base: str):
     """Find the latest run_NNN under saved_models/<base>/.
 
     Returns (run_name, checkpoint_path) or (None, None) if not found.
-    Also checks the old flat layout saved_models/<base>/best.pt as fallback.
     """
     parent = Path("saved_models") / base
 
-    # Check enumerated runs first
     if parent.exists():
         run_dirs = sorted(parent.glob("run_*"), reverse=True)
         for d in run_dirs:
             ckpt = d / "best.pt"
             if ckpt.exists():
                 return f"{base}/{d.name}", str(ckpt)
-
-        # Fallback: flat layout (pre-enumeration runs)
-        flat_ckpt = parent / "best.pt"
-        if flat_ckpt.exists():
-            return base, str(flat_ckpt)
 
     return None, None
 
@@ -72,7 +65,7 @@ def main():
     )
     parser.add_argument(
         "--model", type=str, default="torchmd_gn",
-        choices=["gnn", "set_transformer", "torchmd_gn", "torchmd_et", "both"],
+        choices=["torchmd_gn", "torchmd_et", "both"],
         help="Which model to train/evaluate (default: torchmd_gn)",
     )
     parser.add_argument(
