@@ -31,7 +31,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from src.utils.config import load_yaml, merge_configs, build_data_config, build_model_config, DEFAULT_NORMALIZER_PATH
+from src.utils.config import load_yaml, merge_configs, build_data_config, build_model_config, DEFAULT_NORMALIZER_PATH, resolve_config_path
 from src.utils.seed import set_seed
 from src.data.dataset import HydrodynamicsDataset
 from src.data.normalization import FeatureNormalizer
@@ -82,6 +82,11 @@ def main():
                         help="Timestep for rollout (default: 0.01)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    # Resolve short config names (e.g. "mixed_all" -> "configs/data/mixed_all.yaml")
+    args.model_config = resolve_config_path(args.model_config, "model")
+    if args.data_config:
+        args.data_config = resolve_config_path(args.data_config, "data")
 
     # Derive run_name from checkpoint path if not given: saved_models/<run_name>/best.pt
     if args.run_name is None:

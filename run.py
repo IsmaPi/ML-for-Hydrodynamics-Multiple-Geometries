@@ -98,6 +98,12 @@ def main():
     args.data_config = resolve_config_path(args.data_config, "data")
     args.train_config = resolve_config_path(args.train_config, "training")
 
+    # Resolve short config names (e.g. "mixed_all" -> "configs/data/mixed_all.yaml")
+    sys.path.insert(0, str(Path(__file__).parent))
+    from src.utils.config import resolve_config_path
+    args.data_config = resolve_config_path(args.data_config, "data")
+    args.train_config = resolve_config_path(args.train_config, "training")
+
     python = sys.executable
     models = ["torchmd_gn", "torchmd_et"] if args.model == "both" else [args.model]
 
