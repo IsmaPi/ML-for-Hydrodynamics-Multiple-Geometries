@@ -1,3 +1,5 @@
+"""Lightweight logging wrapper supporting TensorBoard and Weights & Biases backends."""
+
 from pathlib import Path
 from typing import Optional
 

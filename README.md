@@ -128,57 +128,6 @@ python scripts/evaluate.py \
     --output my_results.json
 ```
 
-## Project Structure
-
-```
-configs/                    # YAML configuration files
-  data/                     #   Data generation configs per geometry
-  model/                    #   Model architecture configs (TorchMD_GN, TorchMD_ET)
-  training/                 #   Training strategy configs (single, mixed, leave-one-out)
-src/
-  data/
-    generate.py             # Trajectory generation (libMobility + synthetic fallback)
-    geometry.py             # Geometry/solver registry and theta vector construction
-    dataset.py              # PyTorch Dataset with PyG Data objects
-    normalization.py        # Per-feature mean/std normalization
-  models/
-    torchmd_gn.py           # SchNet-based Graph Network (isotropic message passing)
-    torchmd_et.py           # Equivariant Transformer (anisotropic vector features)
-    common.py               # Shared MLP blocks
-  training/
-    trainer.py              # Training loop with per-geometry validation
-    losses.py               # Displacement MSE loss
-  evaluation/
-    single_step.py          # Single-step accuracy metrics
-    rollout.py              # Autoregressive rollout evaluation
-    scaling.py              # Inference time/memory profiling
-    generalization.py       # Cross-geometry generalization analysis
-  utils/
-    config.py               # YAML config loading + dataclasses
-    seed.py                 # Reproducibility utilities
-    logging.py              # wandb/tensorboard wrapper
-scripts/
-  generate_data.py          # CLI for data generation
-  train.py                  # CLI for training
-  evaluate.py               # CLI for evaluation
-  visualize.py              # Plotting utilities
-run.py                      # Main script to run the full pipeline
-saved_models/               # Trained model weights (by run name)
-  torchmd_et_single/
-    run_001/
-      best.pt               #   Best model checkpoint
-  torchmd_gn_mixed/
-    run_001/
-      best.pt
-results/                    # Training metrics and evaluation results (by run name)
-  torchmd_et_single/
-    run_001/
-      history.csv           #   Per-epoch train/val losses
-      summary.json          #   Final training summary
-      eval_single_step.json #   Single-step evaluation results
-      eval_scaling.json     #   Scaling profiling results
-```
-
 ## Supported Geometries
 
 | Geometry | Solver | Periodicities (x, y, z) |

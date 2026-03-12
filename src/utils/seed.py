@@ -1,3 +1,5 @@
+"""Reproducibility utilities for seeding RNGs across Python, NumPy, and PyTorch."""
+
 import random
 import numpy as np
 import torch

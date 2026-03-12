@@ -1,8 +1,11 @@
 """Scaling evaluation: inference time and memory vs number of particles N."""
 
+import logging
 import time
 import torch
 import numpy as np
+
+log = logging.getLogger(__name__)
 from torch_geometric.data import Data
 from typing import List
 
@@ -83,6 +86,6 @@ def profile_scaling(
             peak_mem_mb = 0.0
 
         results[N] = {"time_ms": elapsed_ms, "memory_mb": peak_mem_mb}
-        print(f"  N={N}: {elapsed_ms:.2f} ms, {peak_mem_mb:.1f} MB")
+        log.info("  N=%d: %.2f ms, %.1f MB", N, elapsed_ms, peak_mem_mb)
 
     return results

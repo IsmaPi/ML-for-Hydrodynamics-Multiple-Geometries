@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.utils.config import (
     load_yaml, merge_configs,
     build_data_config, build_model_config, build_training_config,
+    DEFAULT_NORMALIZER_PATH,
 )
 from src.utils.seed import set_seed
 from src.utils.logging import Logger
@@ -59,7 +61,7 @@ def build_datasets(data_cfg, model_cfg, train_cfg):
 
     # Compute normalization stats on training data
     normalizer = compute_normalization_stats(full_dataset)
-    normalizer.save("data/processed/normalizer.pt")
+    normalizer.save(DEFAULT_NORMALIZER_PATH)
 
     # Apply normalizer; precompute and cache Data objects for faster epoch iteration
     full_dataset.normalizer = normalizer
@@ -136,7 +138,11 @@ def _next_enumerated_run(base: str) -> str:
     return f"{base}/run_{next_num:03d}"
 
 
+log = logging.getLogger(__name__)
+
+
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(description="Train hydrodynamics ML model")
     parser.add_argument("--data-config", type=str, required=True)
     parser.add_argument("--model-config", type=str, required=True)
@@ -166,24 +172,24 @@ def main():
     # Ensure processed dir exists
     Path("data/processed").mkdir(parents=True, exist_ok=True)
 
-    print(f"Run: {run_name}")
-    print(f"Model: {model_cfg.model_type} | Strategy: {train_cfg.strategy}")
-    print(f"Geometries: {data_cfg.geometries} | N: {data_cfg.num_particles}")
+    log.info("Run: %s", run_name)
+    log.info("Model: %s | Strategy: %s", model_cfg.model_type, train_cfg.strategy)
+    log.info("Geometries: %s | N: %s", data_cfg.geometries, data_cfg.num_particles)
 
     train_dataset, val_datasets = build_datasets(data_cfg, model_cfg, train_cfg)
-    print(f"Train samples: {len(train_dataset)} | Val sets: {list(val_datasets.keys())}")
+    log.info("Train samples: %d | Val sets: %s", len(train_dataset), list(val_datasets.keys()))
 
     model = build_model(model_cfg)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {total_params:,}")
+    log.info("Model parameters: %s", f"{total_params:,}")
 
     logger = Logger(train_cfg, backend=train_cfg.log_backend)
     trainer = Trainer(model, train_dataset, val_datasets, train_cfg, logger, run_name=run_name)
     trainer.fit()
     logger.finish()
 
-    print(f"\nModel:   saved_models/{run_name}/best.pt")
-    print(f"Metrics: results/{run_name}/")
+    log.info("Model:   saved_models/%s/best.pt", run_name)
+    log.info("Metrics: results/%s/", run_name)
 
 
 if __name__ == "__main__":

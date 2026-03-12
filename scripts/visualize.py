@@ -234,8 +234,8 @@ def plot_rollout(results_dir: Path, output_dir: Path):
     fig.tight_layout()
     _save_fig(fig, output_dir, "rollout")
 
-    # 3D trajectory scatter if trajectories file exists
-    traj_path = results_dir / "eval_rollout_trajectories.npz"
+    # 3D position scatter if rollout positions file exists
+    traj_path = results_dir / "eval_rollout_positions.npz"
     if traj_path.exists():
         traj_data = np.load(traj_path)
         geos = set(k.replace("_pred", "").replace("_true", "") for k in traj_data.files)
