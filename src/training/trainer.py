@@ -11,9 +11,12 @@ Saves:
 
 import csv
 import json
+import logging
 import time
 import torch
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from torch.amp import GradScaler, autocast
@@ -69,9 +72,9 @@ class Trainer:
         self.use_amp = self.device.type == "cuda"
         self.model = model.to(self.device)
 
-        print(f"Device: {self.device}" + (f" ({torch.cuda.get_device_name(0)})" if self.device.type == "cuda" else ""))
+        log.info("Device: %s%s", self.device, f" ({torch.cuda.get_device_name(0)})" if self.device.type == "cuda" else "")
         if self.use_amp:
-            print("Mixed precision (AMP): enabled")
+            log.info("Mixed precision (AMP): enabled")
 
         # Output directories
         self.model_dir = Path("saved_models") / run_name
@@ -198,14 +201,14 @@ class Trainer:
             # Logging
             if epoch % self.config.log_every == 0:
                 self.logger.log_scalar("train/loss", train_loss, epoch)
-            print(f"Epoch {epoch}/{self.config.num_epochs} | train_loss={train_loss:.6f} | {epoch_time:.1f}s")
+            log.info("Epoch %d/%d | train_loss=%.6f | %.1fs", epoch, self.config.num_epochs, train_loss, epoch_time)
 
             # Validation
             if epoch % self.config.eval_every == 0:
                 val_results = self.validate()
                 for geo, val_loss in val_results.items():
                     self.logger.log_scalar(f"val/{geo}", val_loss, epoch)
-                print(f"  val: {' | '.join(f'{k}={v:.6f}' for k, v in val_results.items())}")
+                log.info("  val: %s", " | ".join(f"{k}={v:.6f}" for k, v in val_results.items()))
 
                 # Save best model to saved_models/
                 avg_val = val_results.get("avg", float("inf"))
@@ -221,13 +224,13 @@ class Trainer:
 
                 # Early stopping
                 if self.patience > 0 and self.epochs_without_improvement >= self.patience:
-                    print(f"Early stopping at epoch {epoch} (no val improvement for {self.epochs_without_improvement} epochs)")
+                    log.info("Early stopping at epoch %d (no val improvement for %d epochs)", epoch, self.epochs_without_improvement)
                     self._save_history()
                     self._save_summary(val_results)
                     total_time = time.time() - t_start
-                    print(f"Training complete in {total_time:.1f}s. Best val loss: {self.best_val_loss:.6f}")
-                    print(f"Model saved to:   {self.model_dir / 'best.pt'}")
-                    print(f"Metrics saved to: {self.results_dir}/")
+                    log.info("Training complete in %.1fs. Best val loss: %.6f", total_time, self.best_val_loss)
+                    log.info("Model saved to:   %s", self.model_dir / "best.pt")
+                    log.info("Metrics saved to: %s/", self.results_dir)
                     return
 
             # Record history row
@@ -257,9 +260,9 @@ class Trainer:
         self._save_summary(val_results)
 
         total_time = time.time() - t_start
-        print(f"Training complete in {total_time:.1f}s. Best val loss: {self.best_val_loss:.6f}")
-        print(f"Model saved to:   {self.model_dir / 'best.pt'}")
-        print(f"Metrics saved to: {self.results_dir}/")
+        log.info("Training complete in %.1fs. Best val loss: %.6f", total_time, self.best_val_loss)
+        log.info("Model saved to:   %s", self.model_dir / "best.pt")
+        log.info("Metrics saved to: %s/", self.results_dir)
 
     def _save_history(self):
         """Write training history to CSV."""

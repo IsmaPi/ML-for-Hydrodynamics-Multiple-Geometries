@@ -4,6 +4,8 @@ from typing import Optional, List, Dict, Any
 
 import yaml
 
+DEFAULT_NORMALIZER_PATH = "data/processed/normalizer.pt"
+
 
 # ---------------------------------------------------------------------------
 # Geometry configuration
