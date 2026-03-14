@@ -52,7 +52,7 @@ class DataConfig:
 class ModelConfig:
     model_type: str = "torchmd_gn"     # "torchmd_gn" or "torchmd_et"
     input_dim: int = 9                 # [force(3), theta(6)]
-    hidden_dim: int = 128
+    hidden_dim: int = 256
     num_layers: int = 4
     output_dim: int = 3                # 3D translational displacement
     layer_norm: bool = True
@@ -63,6 +63,7 @@ class ModelConfig:
     rbf_type: str = "expnorm"
     trainable_rbf: bool = True
     max_num_neighbors: int = 32
+    num_heads: int = 8                 # for TorchMD_ET multi-head attention
     distance_influence: str = "both"   # for TorchMD_ET: "keys", "values", or "both"
     neighbor_strategy: str = "brute"   # "brute" (N≤128) or "cell" (N>1000)
 
