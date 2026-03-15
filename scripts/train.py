@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""CLI entry point for training.
+"""CLI for training with PyTorch Lightning.
 
 Usage:
-    python scripts/train.py \
-        --data-config configs/data/mixed_all.yaml \
-        --model-config configs/model/torchmd_gn.yaml \
-        --train-config configs/training/mixed_geometry.yaml
-
-    python scripts/train.py \
-        --data-config configs/data/nbody_open.yaml \
-        --model-config configs/model/torchmd_et.yaml \
-        --train-config configs/training/single_geometry.yaml
+    python scripts/train.py --data-config default --model-config torchmd_et
+    python scripts/train.py --data-config default --model-config torchmd_gn --train-config default
 """
 
 import argparse
@@ -20,111 +13,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.utils.config import (
-    load_yaml, merge_configs,
-    build_data_config, build_model_config, build_training_config,
-    DEFAULT_NORMALIZER_PATH,
-    resolve_config_path,
+try:
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+    from pytorch_lightning.loggers import TensorBoardLogger
+except ImportError:
+    import lightning as pl
+    from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+    from lightning.pytorch.loggers import TensorBoardLogger
+
+from utils.config import (
+    load_yaml, build_data_config, build_model_config,
+    build_training_config, resolve_config_path,
 )
-from src.utils.seed import set_seed
-from src.utils.logging import Logger
-from src.data.dataset import (
-    HydrodynamicsDataset, compute_normalization_stats, split_dataset,
-)
-from src.models.torchmd_gn import HydroTorchMD_GN
-from src.models.torchmd_et import HydroTorchMD_ET
-from src.training.trainer import Trainer
+from utils.seed import set_seed
+from data.dataset import HydroDataModule
+from models.lightning_wrapper import HydroLitModule
 
 
-def build_datasets(data_cfg, model_cfg, train_cfg):
-    """Build train/val datasets according to training strategy.
-
-    Returns:
-        train_dataset: combined training dataset
-        val_datasets: dict of {geometry_key: dataset} for per-geo validation
-    """
-    all_geos = data_cfg.geometries
-    particle_counts = data_cfg.num_particles
-
-    if train_cfg.strategy == "leave_one_out" and train_cfg.leave_out_geometry:
-        train_geos = [g for g in all_geos if g != train_cfg.leave_out_geometry]
-        held_out_geos = [train_cfg.leave_out_geometry]
-    else:
-        train_geos = all_geos
-        held_out_geos = []
-
-    # Load full dataset for training geometries
-    full_dataset = HydrodynamicsDataset(
-        data_dir=data_cfg.output_dir,
-        geometry_keys=train_geos,
-        particle_counts=particle_counts,
-    )
-
-    # Compute normalization stats on training data
-    normalizer = compute_normalization_stats(full_dataset)
-    normalizer.save(DEFAULT_NORMALIZER_PATH)
-
-    # Apply normalizer; precompute and cache Data objects for faster epoch iteration
-    full_dataset.normalizer = normalizer
-    full_dataset.precompute_data()
-    train_dataset, val_in_dist = split_dataset(full_dataset, train_ratio=0.8, seed=train_cfg.seed)
-
-    # Build per-geometry validation datasets
-    val_datasets = {}
-
-    # In-distribution validation: split by geometry
-    for geo in train_geos:
-        geo_dataset = HydrodynamicsDataset(
-            data_dir=data_cfg.output_dir,
-            geometry_keys=[geo],
-            particle_counts=particle_counts,
-            normalizer=normalizer,
-        )
-        geo_dataset.precompute_data()
-        _, val_geo = split_dataset(geo_dataset, train_ratio=0.8, seed=train_cfg.seed)
-        if len(val_geo) > 0:
-            val_datasets[geo] = val_geo
-
-    # Out-of-distribution (held-out geometry)
-    for geo in held_out_geos:
-        held_ds = HydrodynamicsDataset(
-            data_dir=data_cfg.output_dir,
-            geometry_keys=[geo],
-            particle_counts=particle_counts,
-            normalizer=normalizer,
-        )
-        held_ds.precompute_data()
-        if len(held_ds) > 0:
-            val_datasets[f"{geo}_OOD"] = held_ds
-
-    return train_dataset, val_datasets
-
-
-def build_model(model_cfg):
-    """Instantiate model from config."""
-    if model_cfg.model_type == "torchmd_gn":
-        return HydroTorchMD_GN(model_cfg)
-    elif model_cfg.model_type == "torchmd_et":
-        return HydroTorchMD_ET(model_cfg)
-    else:
-        raise ValueError(f"Unknown model type: {model_cfg.model_type}")
-
-
-def make_run_name(model_cfg, train_cfg) -> str:
-    """Generate an enumerated run name: {model_type}_{strategy}/run_001.
-
-    Each run gets its own numbered subfolder under the base name,
-    so successive runs don't overwrite each other.
-    """
-    parts = [model_cfg.model_type, train_cfg.strategy]
-    if train_cfg.strategy == "leave_one_out" and train_cfg.leave_out_geometry:
-        parts.append(f"lo_{train_cfg.leave_out_geometry}")
-    base = "_".join(parts)
-    return _next_enumerated_run(base)
-
-
-def _next_enumerated_run(base: str) -> str:
-    """Find the next available run_NNN under saved_models/<base>/."""
+def make_run_name(model_cfg) -> str:
+    """Generate enumerated run name: {model_type}/run_001."""
+    base = model_cfg.model_type
     parent = Path("saved_models") / base
     if not parent.exists():
         return f"{base}/run_001"
@@ -139,63 +48,70 @@ def _next_enumerated_run(base: str) -> str:
     return f"{base}/run_{next_num:03d}"
 
 
-log = logging.getLogger(__name__)
-
-
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    parser = argparse.ArgumentParser(description="Train hydrodynamics ML model")
+    log = logging.getLogger(__name__)
+
+    parser = argparse.ArgumentParser(description="Train hydrodynamic displacement model")
     parser.add_argument("--data-config", type=str, required=True)
     parser.add_argument("--model-config", type=str, required=True)
-    parser.add_argument("--train-config", type=str, required=True)
-    parser.add_argument("--run-name", type=str, default=None,
-                        help="Custom run name (default: auto-generated from model+strategy)")
-    parser.add_argument("--leave-out-geometry", type=str, default=None,
-                        help="Override leave_out_geometry from training config")
+    parser.add_argument("--train-config", type=str, default="configs/training/default.yaml")
+    parser.add_argument("--run-name", type=str, default=None)
     args = parser.parse_args()
 
-    # Resolve short config names (e.g. "mixed_all" -> "configs/data/mixed_all.yaml")
-    args.data_config = resolve_config_path(args.data_config, "data")
-    args.model_config = resolve_config_path(args.model_config, "model")
-    args.train_config = resolve_config_path(args.train_config, "training")
+    # Resolve short config names
+    data_path = resolve_config_path(args.data_config, "data")
+    model_path = resolve_config_path(args.model_config, "model")
+    train_path = resolve_config_path(args.train_config, "training")
 
-    raw = merge_configs(
-        load_yaml(args.data_config),
-        load_yaml(args.model_config),
-        load_yaml(args.train_config),
-    )
-    data_cfg = build_data_config(raw)
-    model_cfg = build_model_config(raw)
-    train_cfg = build_training_config(raw)
+    data_cfg = build_data_config(load_yaml(data_path))
+    model_cfg = build_model_config(load_yaml(model_path))
+    train_cfg = build_training_config(load_yaml(train_path))
 
-    if args.leave_out_geometry:
-        train_cfg.leave_out_geometry = args.leave_out_geometry
-
-    run_name = args.run_name or make_run_name(model_cfg, train_cfg)
-
+    run_name = args.run_name or make_run_name(model_cfg)
     set_seed(train_cfg.seed)
 
-    # Ensure processed dir exists
-    Path("data/processed").mkdir(parents=True, exist_ok=True)
-
     log.info("Run: %s", run_name)
-    log.info("Model: %s | Strategy: %s", model_cfg.model_type, train_cfg.strategy)
-    log.info("Geometries: %s | N: %s", data_cfg.geometries, data_cfg.num_particles)
+    log.info("Model: %s | Epochs: %d", model_cfg.model_type, train_cfg.max_epochs)
 
-    train_dataset, val_datasets = build_datasets(data_cfg, model_cfg, train_cfg)
-    log.info("Train samples: %d | Val sets: %s", len(train_dataset), list(val_datasets.keys()))
+    # Data
+    datamodule = HydroDataModule(
+        data_dir=data_cfg.output_dir,
+        geometries=data_cfg.geometries,
+        num_particles=data_cfg.num_particles,
+        batch_size=train_cfg.batch_size,
+        seed=train_cfg.seed,
+    )
 
-    model = build_model(model_cfg)
-    total_params = sum(p.numel() for p in model.parameters())
+    # Model
+    lit_model = HydroLitModule(model_cfg, train_cfg)
+    total_params = sum(p.numel() for p in lit_model.parameters())
     log.info("Model parameters: %s", f"{total_params:,}")
 
-    logger = Logger(train_cfg, backend=train_cfg.log_backend)
-    trainer = Trainer(model, train_dataset, val_datasets, train_cfg, logger, run_name=run_name)
-    trainer.fit()
-    logger.finish()
+    # Trainer
+    trainer = pl.Trainer(
+        max_epochs=train_cfg.max_epochs,
+        accelerator="auto",
+        precision=train_cfg.precision,
+        gradient_clip_val=train_cfg.gradient_clip,
+        callbacks=[
+            EarlyStopping(monitor="val_loss", patience=train_cfg.patience, mode="min"),
+            ModelCheckpoint(
+                dirpath=f"saved_models/{run_name}",
+                monitor="val_loss",
+                save_top_k=1,
+                filename="best",
+            ),
+        ],
+        logger=TensorBoardLogger("logs/", name=run_name),
+        log_every_n_steps=10,
+    )
 
-    log.info("Model:   saved_models/%s/best.pt", run_name)
-    log.info("Metrics: results/%s/", run_name)
+    trainer.fit(lit_model, datamodule)
+
+    log.info("Training complete.")
+    log.info("Best model: saved_models/%s/best.ckpt", run_name)
+    log.info("Logs: logs/%s/", run_name)
 
 
 if __name__ == "__main__":
