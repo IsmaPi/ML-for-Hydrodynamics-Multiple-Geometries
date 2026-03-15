@@ -6,6 +6,6 @@ gradient_clip: 1.0
 patience: 80
 seed: 42
 precision: "32-true"
-loss_type: "relative_mse"
-passive_weight: 5.0
-relative_loss_eps: 1.0e-6
+loss_type: "mse"
+passive_weight: 1.0
+relative_loss_eps: 1.0e-2
