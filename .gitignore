@@ -4,6 +4,7 @@ checkpoints/
 saved_models/
 results/
 logs/
+training_log.txt
 
 # Python
 __pycache__/
