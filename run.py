@@ -1,177 +1,201 @@
 #!/usr/bin/env python3
-"""Main script to run the full pipeline: generate data -> train -> evaluate.
+"""Main pipeline: generate data -> train model -> evaluate.
 
 Usage:
-    # Full pipeline with synthetic data (no libMobility needed)
-    python run.py --synthetic
-
-    # Full pipeline with libMobility (requires CUDA GPU + libMobility installed)
-    python run.py
-
-    # Only specific stages
-    python run.py --stage generate --synthetic
-    python run.py --stage train --model torchmd_gn
-    python run.py --stage evaluate --model torchmd_gn
-
-    # Custom configs
-    python run.py --data-config configs/data/mixed_all.yaml \
-                  --model torchmd_gn \
-                  --train-config configs/training/leave_one_out.yaml
+    python run.py --stage all --model torchmd_et
+    python run.py --stage generate --data-config default
+    python run.py --stage train --model torchmd_et
+    python run.py --stage evaluate --model torchmd_et
 """
 
 import argparse
 import logging
 import sys
-import subprocess
 from pathlib import Path
+
+try:
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+    from pytorch_lightning.loggers import TensorBoardLogger
+except ImportError:
+    import lightning as pl
+    from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+    from lightning.pytorch.loggers import TensorBoardLogger
+
+import torch
+
+from utils.config import (
+    load_yaml, build_data_config, build_model_config,
+    build_training_config, resolve_config_path,
+)
+from utils.seed import set_seed
+from data.generate import generate_all
+from data.dataset import HydroDataModule
+from models.lightning_wrapper import HydroLitModule
+from evaluation.single_step import evaluate_single_step
+from evaluation.pair_sweep import (
+    evaluate_pair_sweep, plot_pair_sweep,
+    plot_pair_sweep_both_particles, plot_pair_sweep_error,
+)
+from evaluation.plot_training import plot_training_curves
 
 log = logging.getLogger(__name__)
 
 
-def _find_latest_run(base: str):
-    """Find the latest run_NNN under saved_models/<base>/.
+def _make_run_name(model_type: str) -> str:
+    """Generate enumerated run name."""
+    parent = Path("saved_models") / model_type
+    if not parent.exists():
+        return f"{model_type}/run_001"
+    existing = sorted(parent.glob("run_*"))
+    nums = []
+    for d in existing:
+        try:
+            nums.append(int(d.name.split("_")[1]))
+        except (IndexError, ValueError):
+            pass
+    next_num = max(nums, default=0) + 1
+    return f"{model_type}/run_{next_num:03d}"
 
-    Returns (run_name, checkpoint_path) or (None, None) if not found.
-    """
-    parent = Path("saved_models") / base
 
-    if parent.exists():
-        run_dirs = sorted(parent.glob("run_*"), reverse=True)
-        for d in run_dirs:
-            ckpt = d / "best.pt"
-            if ckpt.exists():
-                return f"{base}/{d.name}", str(ckpt)
-
-    return None, None
+def _find_latest_checkpoint(model_type: str) -> str:
+    """Find the latest best.ckpt for a model type."""
+    parent = Path("saved_models") / model_type
+    if not parent.exists():
+        raise FileNotFoundError(f"No saved models found for {model_type}")
+    runs = sorted(parent.glob("run_*/best.ckpt"))
+    if not runs:
+        raise FileNotFoundError(f"No checkpoints found in {parent}")
+    return str(runs[-1])
 
 
-def run_cmd(cmd: list, description: str):
-    """Run a command and log its output."""
-    log.info("\n%s\n  %s\n%s\n", "=" * 60, description, "=" * 60)
-    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
-    if result.returncode != 0:
-        log.error("Failed: %s", description)
-        sys.exit(result.returncode)
+def run_generate(data_cfg):
+    """Generate training data."""
+    log.info("=== Generating data ===")
+    generate_all(data_cfg)
+    log.info("Data generation complete.")
+
+
+def run_train(model_type: str, data_cfg, model_cfg, train_cfg):
+    """Train a model."""
+    run_name = _make_run_name(model_type)
+    set_seed(train_cfg.seed)
+
+    log.info("=== Training %s (%s) ===", model_type, run_name)
+
+    datamodule = HydroDataModule(
+        data_dir=data_cfg.output_dir,
+        geometries=data_cfg.geometries,
+        num_particles=data_cfg.num_particles,
+        batch_size=train_cfg.batch_size,
+        seed=train_cfg.seed,
+    )
+
+    lit_model = HydroLitModule(model_cfg, train_cfg)
+    total_params = sum(p.numel() for p in lit_model.parameters())
+    log.info("Model parameters: %s", f"{total_params:,}")
+
+    trainer = pl.Trainer(
+        max_epochs=train_cfg.max_epochs,
+        accelerator="auto",
+        precision=train_cfg.precision,
+        gradient_clip_val=train_cfg.gradient_clip,
+        callbacks=[
+            EarlyStopping(monitor="val_loss", patience=train_cfg.patience, mode="min"),
+            ModelCheckpoint(
+                dirpath=f"saved_models/{run_name}",
+                monitor="val_loss",
+                save_top_k=1,
+                filename="best",
+            ),
+        ],
+        logger=TensorBoardLogger("logs/", name=run_name),
+        log_every_n_steps=10,
+    )
+
+    trainer.fit(lit_model, datamodule)
+    log.info("Training complete. Best model: saved_models/%s/best.ckpt", run_name)
+    return run_name
+
+
+def run_evaluate(model_type: str, data_cfg):
+    """Evaluate the latest checkpoint."""
+    log.info("=== Evaluating %s ===", model_type)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    checkpoint = _find_latest_checkpoint(model_type)
+    lit_model = HydroLitModule.load_from_checkpoint(checkpoint)
+    lit_model.eval()
+    lit_model.to(device)
+    model = lit_model.model
+
+    # Single-step evaluation
+    datamodule = HydroDataModule(
+        data_dir=data_cfg.output_dir,
+        geometries=data_cfg.geometries,
+        num_particles=data_cfg.num_particles,
+    )
+    datamodule.setup()
+
+    results = evaluate_single_step(model, datamodule.val_dataset, device)
+    log.info("Single-step: MSE=%.6e MAE=%.6e RelErr=%.4f",
+             results["mse"], results["mae"], results["relative_error"])
+
+    # Pair sweep evaluation
+    pair_results = evaluate_pair_sweep(model, device, geometry="nbody_open")
+    results_dir = Path("results") / model_type
+    results_dir.mkdir(parents=True, exist_ok=True)
+    plot_pair_sweep(pair_results, save_path=str(results_dir / "pair_sweep_p1.png"), particle_idx=0)
+    plot_pair_sweep(pair_results, save_path=str(results_dir / "pair_sweep_p2.png"), particle_idx=1)
+    plot_pair_sweep_both_particles(pair_results, save_path=str(results_dir / "pair_sweep_both.png"))
+    plot_pair_sweep_error(pair_results, save_path=str(results_dir / "pair_sweep_error.png"))
+
+    # Training curves from TensorBoard logs
+    try:
+        plot_training_curves(model_type, save_dir=str(results_dir))
+    except FileNotFoundError as e:
+        log.warning("Could not plot training curves: %s", e)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run the full ML-for-Hydrodynamics pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--stage", type=str, default="all",
-        choices=["all", "generate", "train", "evaluate"],
-        help="Which stage to run (default: all)",
-    )
-    parser.add_argument(
-        "--model", type=str, default="torchmd_gn",
-        choices=["torchmd_gn", "torchmd_et", "both"],
-        help="Which model to train/evaluate (default: torchmd_gn)",
-    )
-    parser.add_argument(
-        "--data-config", type=str, default="configs/data/nbody_open.yaml",
-        help="Data config YAML (default: configs/data/nbody_open.yaml)",
-    )
-    parser.add_argument(
-        "--train-config", type=str, default="configs/training/single_geometry.yaml",
-        help="Training config YAML (default: configs/training/single_geometry.yaml)",
-    )
-    parser.add_argument(
-        "--synthetic", action="store_true",
-        help="Use synthetic data (no libMobility needed)",
-    )
-    parser.add_argument(
-        "--num-particles", type=int, default=None,
-        help="Override particle count (single N value)",
-    )
-    parser.add_argument(
-        "--leave-out-geometry", type=str, default=None,
-        help="Override leave_out_geometry in training config (e.g. nbody_open)",
-    )
-    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    # Resolve short config names (e.g. "mixed_all" -> "configs/data/mixed_all.yaml")
-    sys.path.insert(0, str(Path(__file__).parent))
-    from src.utils.config import resolve_config_path
-    args.data_config = resolve_config_path(args.data_config, "data")
-    args.train_config = resolve_config_path(args.train_config, "training")
+    parser = argparse.ArgumentParser(description="ML for Hydrodynamics pipeline")
+    parser.add_argument("--stage", choices=["generate", "train", "evaluate", "all"],
+                        default="all")
+    parser.add_argument("--data-config", type=str, default="configs/data/default.yaml")
+    parser.add_argument("--model-config", type=str, default=None,
+                        help="Model config (auto-resolved from --model if not given)")
+    parser.add_argument("--train-config", type=str, default="configs/training/default.yaml")
+    parser.add_argument("--model", choices=["torchmd_gn", "torchmd_et", "both"],
+                        default="torchmd_et")
+    args = parser.parse_args()
 
-    python = sys.executable
-    models = ["torchmd_gn", "torchmd_et"] if args.model == "both" else [args.model]
+    # Resolve configs
+    data_path = resolve_config_path(args.data_config, "data")
+    train_path = resolve_config_path(args.train_config, "training")
+    data_cfg = build_data_config(load_yaml(data_path))
+    train_cfg = build_training_config(load_yaml(train_path))
 
-    # ----------------------------------------------------------------
-    # Stage 1: Generate data
-    # ----------------------------------------------------------------
-    if args.stage in ("all", "generate"):
-        cmd = [python, "scripts/generate_data.py", "--config", args.data_config]
-        if args.synthetic:
-            cmd.append("--synthetic")
-        if args.num_particles:
-            cmd.extend(["--num-particles", str(args.num_particles)])
-        run_cmd(cmd, "Generating training data")
+    # Determine which models to run
+    model_types = ["torchmd_gn", "torchmd_et"] if args.model == "both" else [args.model]
 
-    # Derive strategy from the YAML content to match train.py's make_run_name()
-    # train.py uses train_cfg.strategy (e.g. "single", "mixed", "leave_one_out")
-    import yaml
-    with open(args.train_config) as _f:
-        _train_raw = yaml.safe_load(_f) or {}
-    strategy = _train_raw.get("strategy", Path(args.train_config).stem)
+    if args.stage in ("generate", "all"):
+        run_generate(data_cfg)
 
-    # ----------------------------------------------------------------
-    # Stage 2: Train
-    # ----------------------------------------------------------------
-    if args.stage in ("all", "train"):
-        for model_name in models:
-            model_config = f"configs/model/{model_name}.yaml"
-            # Let train.py auto-enumerate the run name (run_001, run_002, ...)
-            cmd = [
-                python, "scripts/train.py",
-                "--data-config", args.data_config,
-                "--model-config", model_config,
-                "--train-config", args.train_config,
-            ]
-            if args.leave_out_geometry:
-                cmd.extend(["--leave-out-geometry", args.leave_out_geometry])
-            run_cmd(cmd, f"Training {model_name} ({strategy})")
+    for model_type in model_types:
+        # Resolve model config
+        if args.model_config:
+            model_path = resolve_config_path(args.model_config, "model")
+        else:
+            model_path = resolve_config_path(model_type, "model")
+        model_cfg = build_model_config(load_yaml(model_path))
 
-    # ----------------------------------------------------------------
-    # Stage 3: Evaluate
-    # ----------------------------------------------------------------
-    if args.stage in ("all", "evaluate"):
-        for model_name in models:
-            model_config = f"configs/model/{model_name}.yaml"
-            base = f"{model_name}_{strategy}"
+        if args.stage in ("train", "all"):
+            run_train(model_type, data_cfg, model_cfg, train_cfg)
 
-            # Find the latest enumerated run
-            run_name, checkpoint = _find_latest_run(base)
-            if checkpoint is None:
-                log.warning("No checkpoint found for %s, skipping evaluation.", base)
-                continue
-
-            # Single-step evaluation
-            cmd = [
-                python, "scripts/evaluate.py",
-                "--data-config", args.data_config,
-                "--model-config", model_config,
-                "--checkpoint", checkpoint,
-                "--eval-mode", "single_step",
-                "--run-name", run_name,
-            ]
-            run_cmd(cmd, f"Evaluating {model_name} (single-step)")
-
-            # Scaling evaluation
-            cmd = [
-                python, "scripts/evaluate.py",
-                "--model-config", model_config,
-                "--checkpoint", checkpoint,
-                "--eval-mode", "scaling",
-                "--run-name", run_name,
-            ]
-            run_cmd(cmd, f"Evaluating {model_name} (scaling)")
-
-    log.info("\n%s\n  Pipeline complete!\n%s", "=" * 60, "=" * 60)
+        if args.stage in ("evaluate", "all"):
+            run_evaluate(model_type, data_cfg)
 
 
 if __name__ == "__main__":

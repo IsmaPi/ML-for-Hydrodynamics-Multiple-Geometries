@@ -1,13 +1,12 @@
 model_type: torchmd_gn
-# Node features: [force(3), theta(6)] — positions enter via data.pos for neighbor finding
-input_dim: 9
+input_dim: 3                  # forces only (3D)
 hidden_dim: 128
 num_layers: 3
 output_dim: 3
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0
 max_num_neighbors: 128
-neighbor_strategy: brute   # "brute" for N<=128, "cell" for N>1000
+neighbor_strategy: brute
 # RBF distance encoding
 num_rbf: 32
 rbf_type: expnorm

@@ -1,54 +1,42 @@
 #!/usr/bin/env python3
-"""CLI entry point for data generation.
+"""CLI for generating training data using libMobility.
 
 Usage:
-    python scripts/generate_data.py --config configs/data/mixed_all.yaml
-    python scripts/generate_data.py --config configs/data/nbody_open.yaml --synthetic
-    python scripts/generate_data.py --config configs/data/mixed_all.yaml --geometry nbody_open --num-particles 32
+    python scripts/generate_data.py --config configs/data/default.yaml
+    python scripts/generate_data.py --config default
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.generate import generate_dataset_for_geometry
-from src.utils.config import load_yaml
-from src.utils.seed import set_seed
+from utils.config import load_yaml, build_data_config, resolve_config_path
+from data.generate import generate_all
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate trajectory data for hydrodynamics ML")
-    parser.add_argument("--config", type=str, required=True, help="Path to data config YAML")
-    parser.add_argument("--geometry", type=str, default=None,
-                        help="Generate for a specific geometry only (overrides config)")
-    parser.add_argument("--num-particles", type=int, default=None,
-                        help="Generate for a specific N only (overrides config)")
-    parser.add_argument("--synthetic", action="store_true",
-                        help="Use synthetic Oseen approximation instead of libMobility")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    parser = argparse.ArgumentParser(description="Generate hydrodynamic training data")
+    parser.add_argument("--config", type=str, required=True,
+                        help="Data config file or short name (e.g. 'default')")
     args = parser.parse_args()
 
-    config = load_yaml(args.config)
-    seed = config.get("seed", 42)
-    set_seed(seed)
+    config_path = resolve_config_path(args.config, "data")
+    raw = load_yaml(config_path)
+    data_cfg = build_data_config(raw)
 
-    use_synthetic = args.synthetic or config.get("use_synthetic", False)
+    logging.info("Generating data for geometries: %s", data_cfg.geometries)
+    logging.info("Particle counts: %s", data_cfg.num_particles)
+    logging.info("Cloud samples per geo/N: %d, Pair samples per geo: %d",
+                 data_cfg.num_cloud_samples, data_cfg.num_pair_samples)
 
-    geometries = [args.geometry] if args.geometry else config.get("geometries", [])
-    particle_counts = [args.num_particles] if args.num_particles else config.get("num_particles", [64])
+    generate_all(data_cfg)
 
-    if not geometries:
-        print("Error: no geometries specified in config or --geometry flag.")
-        sys.exit(1)
-
-    for geo in geometries:
-        for N in particle_counts:
-            print(f"Generating {geo} with N={N} ({'synthetic' if use_synthetic else 'libMobility'})...")
-            generate_dataset_for_geometry(geo, config, N=N, use_synthetic=use_synthetic)
-
-    print("Done!")
+    logging.info("Data generation complete. Output: %s", data_cfg.output_dir)
 
 
 if __name__ == "__main__":

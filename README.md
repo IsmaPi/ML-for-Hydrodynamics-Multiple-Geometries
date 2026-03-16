@@ -1,6 +1,6 @@
 # ML for Hydrodynamics: Generalization Across Multiple Geometries
 
-Applying Machine Learning to predict deterministic particle displacements in low-Reynolds-number hydrodynamics, comparing a **SchNet-based GN** (TorchMD_GN) and an **Equivariant Transformer** (TorchMD_ET) on their ability to generalize across multiple boundary geometries.
+Applying Machine Learning to predict deterministic particle displacements in low-Reynolds-number hydrodynamics, comparing a **SchNet-based GN** (TorchMD_GN) and an **Equivariant Transformer** (TorchMD_ET) on their ability to generalize across boundary geometries.
 
 Supervised by Prof. R. P. Pelaez (Universidad Autonoma de Madrid / IE University).
 
@@ -9,37 +9,34 @@ Supervised by Prof. R. P. Pelaez (Universidad Autonoma de Madrid / IE University
 ### 1. Create the conda environment
 
 ```bash
-conda create -n hydro-ml python=3.11 numpy scipy pyyaml matplotlib -y --channel conda-forge
+conda env create -f environment.yml
 conda activate hydro-ml
-pip install torch torch_geometric torch-cluster torch-scatter
 ```
 
-### 2. Install libMobility for real data generation
+### 2. Install libMobility
 
-When a CUDA-enabled GPU is available:
+libMobility is required for data generation (provides ground-truth mobility solvers).
 
 ```bash
-# Follow libMobility installation instructions from:
+# Follow installation instructions from:
 # https://github.com/stochasticHydroTools/libMobility
 ```
 
-Without libMobility, the pipeline uses a synthetic Oseen-tensor approximation for development and testing.
-
 ## Quick Start
 
-### Run the full pipeline (synthetic data, no GPU needed)
+### Run the full pipeline
 
 ```bash
 conda activate hydro-ml
-python run.py --synthetic --data-config configs/data/nbody_open.yaml
+python run.py --stage all --model torchmd_et
 ```
 
-This will: generate synthetic data -> train TorchMD_GN -> evaluate it.
+This will: generate data (libMobility) -> train TorchMD_ET -> evaluate.
 
 ### Run with both models
 
 ```bash
-python run.py --synthetic --model both --data-config configs/data/nbody_open.yaml
+python run.py --stage all --model both
 ```
 
 ## Step-by-Step Usage
@@ -47,85 +44,55 @@ python run.py --synthetic --model both --data-config configs/data/nbody_open.yam
 ### 1. Generate data
 
 ```bash
-# Single geometry with synthetic data
-python scripts/generate_data.py --config configs/data/nbody_open.yaml --synthetic
+# All geometries (default)
+python scripts/generate_data.py --config default
 
-# All geometries with synthetic data
-python scripts/generate_data.py --config configs/data/mixed_all.yaml --synthetic
-
-# Specific particle count
-python scripts/generate_data.py --config configs/data/nbody_open.yaml --synthetic --num-particles 32
-
-# With libMobility (requires CUDA GPU)
-python scripts/generate_data.py --config configs/data/mixed_all.yaml
+# Single geometry
+python scripts/generate_data.py --config nbody_open
+python scripts/generate_data.py --config pse_periodic
 ```
 
 ### 2. Train a model
 
-Training automatically saves:
-- **Model weights** to `saved_models/<run_name>/best.pt`
-- **Training history** (per-epoch losses) to `results/<run_name>/history.csv`
-- **Summary metrics** to `results/<run_name>/summary.json`
+Training uses PyTorch Lightning. Models are saved to `saved_models/`, logs to `logs/`.
 
 ```bash
-# Train SchNet (GN) on a single geometry
+# Train Equivariant Transformer
 python scripts/train.py \
-    --data-config configs/data/nbody_open.yaml \
-    --model-config configs/model/torchmd_gn.yaml \
-    --train-config configs/training/single_geometry.yaml
+    --data-config default \
+    --model-config torchmd_et
 
-# Train Equivariant Transformer on mixed geometries
+# Train SchNet (GN)
 python scripts/train.py \
-    --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/torchmd_et.yaml \
-    --train-config configs/training/mixed_geometry.yaml
-
-# Leave-one-out generalization experiment
-python scripts/train.py \
-    --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/torchmd_et.yaml \
-    --train-config configs/training/leave_one_out.yaml
+    --data-config default \
+    --model-config torchmd_gn
 
 # Custom run name
 python scripts/train.py \
-    --data-config configs/data/nbody_open.yaml \
-    --model-config configs/model/torchmd_gn.yaml \
-    --train-config configs/training/single_geometry.yaml \
+    --data-config default \
+    --model-config torchmd_et \
     --run-name my_experiment
 ```
 
-### 3. Evaluate (using saved models, no retraining needed)
-
-Evaluation loads models from `saved_models/` and writes results to `results/`.
+Monitor training with TensorBoard:
 
 ```bash
-# Single-step accuracy per geometry
-python scripts/evaluate.py \
-    --data-config configs/data/nbody_open.yaml \
-    --model-config configs/model/torchmd_gn.yaml \
-    --checkpoint saved_models/torchmd_gn_single/run_001/best.pt \
-    --eval-mode single_step
+tensorboard --logdir logs/
+```
 
-# Cross-geometry generalization report
-python scripts/evaluate.py \
-    --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/torchmd_et.yaml \
-    --checkpoint saved_models/torchmd_et_mixed/run_001/best.pt \
-    --eval-mode generalization
+### 3. Evaluate
 
-# Scaling: inference time/memory vs number of particles
+```bash
+# Single-step accuracy
 python scripts/evaluate.py \
-    --model-config configs/model/torchmd_et.yaml \
-    --checkpoint saved_models/torchmd_et_single/run_001/best.pt \
-    --eval-mode scaling
+    --checkpoint saved_models/torchmd_et/run_001/best.ckpt \
+    --eval-mode single_step \
+    --data-config default
 
-# Custom output path
+# Two-particle distance sweep vs libMobility ground truth
 python scripts/evaluate.py \
-    --data-config configs/data/mixed_all.yaml \
-    --model-config configs/model/torchmd_et.yaml \
-    --checkpoint saved_models/torchmd_et_mixed/run_001/best.pt \
-    --eval-mode generalization \
-    --output my_results.json
+    --checkpoint saved_models/torchmd_et/run_001/best.ckpt \
+    --eval-mode pair_sweep
 ```
 
 ## Supported Geometries
@@ -133,23 +100,28 @@ python scripts/evaluate.py \
 | Geometry | Solver | Periodicities (x, y, z) |
 |---|---|---|
 | `nbody_open` | NBody | open, open, open |
-| `nbody_single_wall` | NBody | open, open, single_wall |
-| `dpstokes_two_walls` | DPStokes | periodic, periodic, two_walls |
 | `pse_periodic` | PSE | periodic, periodic, periodic |
-
-## Training Strategies
-
-- **Single geometry**: Train and evaluate on one geometry (baseline).
-- **Mixed geometry**: Train on all geometries combined, evaluate on each separately.
-- **Leave-one-out**: Train on 3 geometries, test generalization on the held-out 4th.
 
 ## Configuration
 
-All hyperparameters are in YAML config files under `configs/`. Key parameters:
+All hyperparameters are in YAML config files under `configs/`:
 
 - `configs/model/torchmd_gn.yaml`: hidden_dim, num_layers, cutoff_radius, num_rbf
 - `configs/model/torchmd_et.yaml`: hidden_dim, num_layers, num_heads, distance_influence
-- `configs/training/*.yaml`: learning_rate, batch_size, num_epochs, strategy
+- `configs/training/default.yaml`: learning_rate, batch_size, max_epochs, patience
+- `configs/data/default.yaml`: geometries, num_particles, num_cloud_samples, num_pair_samples
+
+## Project Structure
+
+```
+data/           # Data generation (libMobility) and PyTorch Dataset/DataModule
+models/         # TorchMD_ET, TorchMD_GN, Lightning wrapper
+evaluation/     # Single-step metrics and pair sweep validation
+utils/          # Config dataclasses, seed utilities
+scripts/        # CLI entry points (generate, train, evaluate)
+configs/        # YAML configuration files
+run.py          # Main pipeline: generate -> train -> evaluate
+```
 
 ## License
 
