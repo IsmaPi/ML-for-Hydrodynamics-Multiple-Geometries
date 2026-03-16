@@ -67,19 +67,18 @@ class HydroTorchMD_ET(nn.Module):
         # Replace the default integer atom-type embedding with our input projection
         self.backbone.embedding = self.input_proj
 
-        # Equivariant scalar path: scalar correction magnitude along force direction
-        # Outputs (N, 1) scalar that multiplies normalized force vector
+        # Scalar feature path: learned correction from scalar features
         self.scalar_head = nn.Sequential(
             nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
             nn.SiLU(),
-            nn.Linear(cfg.hidden_dim, 1),
+            nn.Linear(cfg.hidden_dim, cfg.output_dim),
         )
 
-        # Equivariant vector path: anisotropic interaction correction
+        # Vector feature path: equivariant anisotropic correction
         # (N, 3, hidden_dim) -> (N, 3, 1) -> (N, 3)
         self.output_proj = nn.Linear(cfg.hidden_dim, 1, bias=False)
 
-        # Zero-init both paths so model starts from pure self-mobility baseline
+        # Zero-init last layers so model starts from pure self-mobility baseline
         nn.init.zeros_(self.scalar_head[-1].weight)
         nn.init.zeros_(self.scalar_head[-1].bias)
         nn.init.zeros_(self.output_proj.weight)
@@ -92,17 +91,11 @@ class HydroTorchMD_ET(nn.Module):
             z=data.x, pos=data.pos, batch=data.batch, box=box
         )
 
-        # Equivariant scalar path: correction along force direction
-        # For zero-force particles, scalar_out = 0 (no force direction)
-        scalar_mag = self.scalar_head(x_scalar)  # (N, 1)
-        force_norm = data.x.norm(dim=-1, keepdim=True).clamp(min=1e-12)
-        force_dir = data.x / force_norm
-        # Zero out for particles with negligible force
-        mask = (force_norm > 1e-6).float()
-        scalar_out = scalar_mag * force_dir * mask  # (N, 3), equivariant
+        # Scalar path: interaction correction
+        scalar_out = self.scalar_head(x_scalar)
 
-        # Equivariant vector path: anisotropic interaction correction
-        vector_out = self.output_proj(vec).squeeze(-1)  # (N, 3)
+        # Vector path: anisotropic interaction correction
+        vector_out = self.output_proj(vec).squeeze(-1)
 
-        # Delta learning: self-mobility + equivariant scalar + equivariant vector
+        # Delta learning: analytical self-mobility + learned corrections
         return self.self_mobility * data.x + scalar_out + vector_out
