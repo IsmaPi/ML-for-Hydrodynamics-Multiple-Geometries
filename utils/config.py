@@ -1,5 +1,6 @@
 """Configuration dataclasses and YAML loading helpers."""
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -24,6 +25,11 @@ class ModelConfig:
     max_num_neighbors: int = 32
     distance_influence: str = "both"    # ET only: "keys", "values", or "both"
     neighbor_strategy: str = "brute"
+    # TensorNet specific
+    equivariance_invariance_group: str = "O(3)"
+    # Physics: viscosity = 1/(6*pi) so self_mobility = 1
+    viscosity: float = 1.0 / (6.0 * math.pi)
+    hydrodynamic_radius: float = 1.0
 
 
 @dataclass
@@ -36,7 +42,7 @@ class DataConfig:
     pair_d_min: float = 2.0             # minimum pair distance (units of a)
     pair_d_max: float = 20.0            # maximum pair distance (units of a)
     force_scale: float = 1.0
-    viscosity: float = 1.0
+    viscosity: float = 1.0 / (6.0 * math.pi)  # self_mobility = 1
     hydrodynamic_radius: float = 1.0
     output_dir: str = "data/raw"
     seed: int = 42

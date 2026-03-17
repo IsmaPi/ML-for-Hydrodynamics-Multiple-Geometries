@@ -17,6 +17,7 @@ except ImportError:
 
 from models.torchmd_et import HydroTorchMD_ET
 from models.torchmd_gn import HydroTorchMD_GN
+from models.torchmd_tn import HydroTorchMD_TN
 from utils.config import ModelConfig, TrainingConfig
 
 # Allow torch.load(weights_only=True) to deserialize our config dataclasses
@@ -29,6 +30,8 @@ def build_model(model_cfg):
         return HydroTorchMD_ET(model_cfg)
     elif model_cfg.model_type == "torchmd_gn":
         return HydroTorchMD_GN(model_cfg)
+    elif model_cfg.model_type == "torchmd_tn":
+        return HydroTorchMD_TN(model_cfg)
     else:
         raise ValueError(f"Unknown model type: {model_cfg.model_type}")
 
@@ -129,6 +132,22 @@ class HydroLitModule(pl.LightningModule):
                  batch_size=batch.num_graphs)
 
         return loss
+
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        """Evaluate on test set. Reports raw MSE, MAE, and relative error."""
+        self.model.eval()
+        pred = self.model(batch)
+        target = batch.y
+
+        mse = (pred - target).pow(2).mean()
+        mae = (pred - target).abs().mean()
+        rel_error = ((pred - target).norm(dim=-1)
+                     / target.norm(dim=-1).clamp(min=1e-12)).mean()
+
+        self.log("test_mse", mse, batch_size=batch.num_graphs)
+        self.log("test_mae", mae, batch_size=batch.num_graphs)
+        self.log("test_rel_error", rel_error, batch_size=batch.num_graphs)
 
     def configure_optimizers(self):
         optimizer = AdamW(

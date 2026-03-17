@@ -1,11 +1,11 @@
-"""Two-particle distance sweep evaluation against libMobility ground truth.
+"""Two-particle distance sweep evaluation.
 
 Places two particles at varying distances, applies a force on particle 1,
-and compares model predictions to the exact libMobility Mdot result.
-This is the key validation that the model has learned the mobility operator.
+and compares two callables (e.g. model vs libMobility ground truth).
 """
 
 import logging
+import math
 
 import numpy as np
 import torch
@@ -16,9 +16,8 @@ log = logging.getLogger(__name__)
 
 @torch.no_grad()
 def evaluate_pair_sweep(
-    model,
-    device,
-    geometry: str = "nbody_open",
+    model_fn,
+    solver_fn,
     d_min: float = 2.5,
     d_max: float = 15.0,
     num_points: int = 100,
@@ -27,44 +26,34 @@ def evaluate_pair_sweep(
     viscosity: float = 1.0,
     a: float = 1.0,
     box_size: float = 32.0,
+    periodic: bool = False,
 ):
-    """Run a two-particle distance sweep comparing model vs libMobility.
+    """Run a two-particle distance sweep comparing two displacement functions.
 
     Args:
-        model: trained model in eval mode
-        device: torch device
-        geometry: "nbody_open" or "pse_periodic"
+        model_fn: callable (positions_ndarray, forces_ndarray) -> displacement_ndarray
+        solver_fn: callable (positions_ndarray, forces_ndarray) -> displacement_ndarray
         d_min: minimum distance (units of a)
         d_max: maximum distance (units of a)
         num_points: number of distance points
         force_direction: (3,) force direction on particle 1 (default: x-axis)
         force_magnitude: magnitude of force on particle 1
-        viscosity: fluid viscosity
-        a: hydrodynamic radius
-        box_size: box size for periodic geometry
+        viscosity: fluid viscosity (for self_mobility reference line)
+        a: hydrodynamic radius (for self_mobility reference line)
+        box_size: box size for periodic geometry (position placement)
+        periodic: whether to center particles in box
 
     Returns:
         dict with:
             distances: (num_points,) array of distances
             pred_displacements: (num_points, 2, 3) model predictions
-            true_displacements: (num_points, 2, 3) libMobility ground truth
+            true_displacements: (num_points, 2, 3) ground truth
+            self_mobility: analytical self-mobility value
+            force_magnitude: applied force magnitude
     """
-    import libMobility as lm
-
-    model.eval()
-
     if force_direction is None:
         force_direction = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     force_direction = force_direction / np.linalg.norm(force_direction)
-
-    # Create solver
-    if geometry == "nbody_open":
-        solver = lm.NBody(periodicityX="open", periodicityY="open", periodicityZ="open")
-        solver.initialize(viscosity=viscosity, hydrodynamicRadius=a)
-    elif geometry == "pse_periodic":
-        solver = lm.PSE(periodicityX="periodic", periodicityY="periodic", periodicityZ="periodic")
-        solver.setParameters(Lx=box_size, Ly=box_size, Lz=box_size, psi=1.0)
-        solver.initialize(viscosity=viscosity, hydrodynamicRadius=a)
 
     distances = np.linspace(d_min, d_max, num_points)
     pred_all = []
@@ -73,36 +62,17 @@ def evaluate_pair_sweep(
     forces = np.array(
         [force_direction * force_magnitude, [0.0, 0.0, 0.0]], dtype=np.float32
     )
-    forces_tensor = torch.tensor(forces, dtype=torch.float32)
 
     for d in distances:
-        # Particle 1 at origin (or box center), particle 2 at distance d along x
-        if geometry == "pse_periodic":
+        if periodic:
             center = np.array([box_size / 2] * 3, dtype=np.float32)
             positions = np.array([center, center + np.array([d, 0, 0], dtype=np.float32)])
         else:
             positions = np.array([[0.0, 0.0, 0.0], [d, 0.0, 0.0]], dtype=np.float32)
 
-        # Ground truth from libMobility
-        solver.setPositions(positions)
-        true_disp, _ = solver.Mdot(forces=forces)
-        true_disp = np.array(true_disp, dtype=np.float32).reshape(2, 3)
-        true_all.append(true_disp)
+        true_all.append(solver_fn(positions, forces))
+        pred_all.append(model_fn(positions, forces))
 
-        # Model prediction
-        pos_tensor = torch.tensor(positions, dtype=torch.float32)
-        data = Data(
-            x=forces_tensor.to(device),
-            pos=pos_tensor.to(device),
-        )
-        data.batch = torch.zeros(2, dtype=torch.long, device=device)
-
-        pred_disp = model(data).cpu().numpy()
-        pred_all.append(pred_disp)
-
-    solver.clean()
-
-    import math
     self_mobility = 1.0 / (6.0 * math.pi * viscosity * a)
 
     return {
@@ -121,6 +91,9 @@ def plot_pair_sweep(results, save_path=None, particle_idx=0):
         results: dict from evaluate_pair_sweep
         save_path: optional path to save figure
         particle_idx: which particle to plot (0 or 1)
+
+    Returns:
+        matplotlib Figure
     """
     import matplotlib.pyplot as plt
 
@@ -147,7 +120,7 @@ def plot_pair_sweep(results, save_path=None, particle_idx=0):
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle("Pair Sweep: Model vs libMobility", fontsize=13)
+    fig.suptitle("Pair Sweep: Model vs Ground Truth", fontsize=13)
     fig.tight_layout()
 
     if save_path:
@@ -158,7 +131,15 @@ def plot_pair_sweep(results, save_path=None, particle_idx=0):
 
 
 def plot_pair_sweep_both_particles(results, save_path=None):
-    """Plot pair sweep for both particles with error panel."""
+    """Plot pair sweep for both particles.
+
+    Args:
+        results: dict from evaluate_pair_sweep
+        save_path: optional path to save figure
+
+    Returns:
+        matplotlib Figure
+    """
     import matplotlib.pyplot as plt
 
     distances = results["distances"]
@@ -189,7 +170,15 @@ def plot_pair_sweep_both_particles(results, save_path=None):
 
 
 def plot_pair_sweep_error(results, save_path=None):
-    """Plot absolute and relative error vs distance."""
+    """Plot absolute and relative error vs distance.
+
+    Args:
+        results: dict from evaluate_pair_sweep
+        save_path: optional path to save figure
+
+    Returns:
+        matplotlib Figure
+    """
     import matplotlib.pyplot as plt
 
     distances = results["distances"]

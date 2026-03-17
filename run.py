@@ -28,6 +28,7 @@ from utils.config import (
     load_yaml, build_data_config, build_model_config,
     build_training_config, resolve_config_path,
 )
+from utils.solver import SolverCallable
 from utils.seed import set_seed
 from data.generate import generate_all
 from data.dataset import HydroDataModule
@@ -37,7 +38,6 @@ from evaluation.pair_sweep import (
     evaluate_pair_sweep, plot_pair_sweep,
     plot_pair_sweep_both_particles, plot_pair_sweep_error,
 )
-from evaluation.plot_training import plot_training_curves
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +115,9 @@ def run_train(model_type: str, data_cfg, model_cfg, train_cfg):
 
     trainer.fit(lit_model, datamodule)
     log.info("Training complete. Best model: saved_models/%s/best.ckpt", run_name)
+
+    trainer.test(lit_model, datamodule)
+
     return run_name
 
 
@@ -141,8 +144,41 @@ def run_evaluate(model_type: str, data_cfg):
     log.info("Single-step: MSE=%.6e MAE=%.6e RelErr=%.4f",
              results["mse"], results["mae"], results["relative_error"])
 
-    # Pair sweep evaluation
-    pair_results = evaluate_pair_sweep(model, device, geometry="nbody_open")
+    # Test set evaluation
+    trainer = pl.Trainer(accelerator="auto")
+    trainer.test(lit_model, datamodule, ckpt_path=checkpoint)
+
+    # Restore model to device after trainer.test()
+    lit_model.to(device)
+    lit_model.eval()
+    model = lit_model.model
+
+    # Pair sweep evaluation — create callables for model and solver
+    def model_fn(positions, forces):
+        pos_t = torch.tensor(positions, dtype=torch.float32, device=device)
+        f_t = torch.tensor(forces, dtype=torch.float32, device=device)
+        from torch_geometric.data import Data
+        data = Data(x=f_t, pos=pos_t)
+        data.batch = torch.zeros(positions.shape[0], dtype=torch.long, device=device)
+        return model(data).cpu().numpy()
+
+    geometry = data_cfg.geometries[0]
+    solver_callable = SolverCallable(
+        geometry=geometry,
+        viscosity=data_cfg.viscosity,
+        a=data_cfg.hydrodynamic_radius,
+        box_size=data_cfg.box_size,
+    )
+
+    pair_results = evaluate_pair_sweep(
+        model_fn, solver_callable,
+        viscosity=data_cfg.viscosity,
+        a=data_cfg.hydrodynamic_radius,
+        box_size=data_cfg.box_size,
+        periodic=(geometry == "pse_periodic"),
+    )
+    solver_callable.clean()
+
     results_dir = Path("results") / model_type
     results_dir.mkdir(parents=True, exist_ok=True)
     plot_pair_sweep(pair_results, save_path=str(results_dir / "pair_sweep_p1.png"), particle_idx=0)
@@ -150,11 +186,6 @@ def run_evaluate(model_type: str, data_cfg):
     plot_pair_sweep_both_particles(pair_results, save_path=str(results_dir / "pair_sweep_both.png"))
     plot_pair_sweep_error(pair_results, save_path=str(results_dir / "pair_sweep_error.png"))
 
-    # Training curves from TensorBoard logs
-    try:
-        plot_training_curves(model_type, save_dir=str(results_dir))
-    except FileNotFoundError as e:
-        log.warning("Could not plot training curves: %s", e)
 
 
 def main():
@@ -167,7 +198,7 @@ def main():
     parser.add_argument("--model-config", type=str, default=None,
                         help="Model config (auto-resolved from --model if not given)")
     parser.add_argument("--train-config", type=str, default="configs/training/default.yaml")
-    parser.add_argument("--model", choices=["torchmd_gn", "torchmd_et", "both"],
+    parser.add_argument("--model", choices=["torchmd_gn", "torchmd_et", "torchmd_tn", "all"],
                         default="torchmd_et")
     args = parser.parse_args()
 
@@ -178,7 +209,10 @@ def main():
     train_cfg = build_training_config(load_yaml(train_path))
 
     # Determine which models to run
-    model_types = ["torchmd_gn", "torchmd_et"] if args.model == "both" else [args.model]
+    if args.model == "all":
+        model_types = ["torchmd_gn", "torchmd_et", "torchmd_tn"]
+    else:
+        model_types = [args.model]
 
     if args.stage in ("generate", "all"):
         run_generate(data_cfg)

@@ -1,14 +1,15 @@
-"""Equivariant Transformer model for learning the hydrodynamic mobility operator.
+"""TensorNet model for learning the hydrodynamic mobility operator.
 
-Wraps TorchMD-NET's TorchMD_ET backbone to predict per-particle displacements
-from forces and positions. Uses two equivariant output paths:
+Wraps TorchMD-NET's TensorNet backbone to predict per-particle displacements
+from forces and positions. Uses equivariant scalar coefficients:
 
-1. Scalar coefficients x equivariant basis vectors (force dir + neighbor dir)
-   - Provides strong gradient signal to the backbone through scalar features
-   - Maintains equivariance by multiplying invariant scalars with equivariant vectors
+    displacement = self_mobility * F
+                 + alpha * F               (self-mobility correction)
+                 + beta * neighbor_dir     (interaction correction)
 
-2. Equivariant vector features from the ET backbone
-   - Captures residual anisotropic corrections beyond the two basis directions
+Unlike TorchMD_ET, TensorNet only outputs invariant scalar features (no vector
+features), so the equivariant output relies entirely on scalar coefficients
+multiplied by equivariant basis vectors.
 
 The model learns: displacement = M(X) . F
 where M is the configuration-dependent mobility tensor.
@@ -19,19 +20,18 @@ import math
 import torch
 import torch.nn as nn
 from torch_geometric.utils import scatter
-from torchmdnet.models.torchmd_et import TorchMD_ET
+from torchmdnet.models.tensornet import TensorNet
 
 
-class HydroTorchMD_ET(nn.Module):
-    """Equivariant Transformer for predicting hydrodynamic displacements.
+class HydroTorchMD_TN(nn.Module):
+    """TensorNet for predicting hydrodynamic displacements.
 
     Takes particle positions and forces, predicts displacement = M(X) . F.
-    All output paths are equivariant: invariant scalars x equivariant vectors.
+    Output is equivariant: invariant scalars x equivariant vectors.
 
     Output = self_mobility * F
-             + alpha * F                  (self-mobility correction, along force)
-             + beta * neighbor_dir        (interaction correction, along neighbors)
-             + vector_out                 (residual equivariant correction)
+             + alpha * F                  (self-mobility correction)
+             + beta * neighbor_dir        (interaction correction)
 
     Args:
         cfg: ModelConfig with architecture hyperparameters.
@@ -57,26 +57,26 @@ class HydroTorchMD_ET(nn.Module):
         # Input projection: continuous force features -> hidden dim
         self.input_proj = nn.Linear(cfg.input_dim, cfg.hidden_dim)
 
-        # TorchMD-NET Equivariant Transformer backbone
-        self.backbone = TorchMD_ET(
+        # TorchMD-NET TensorNet backbone
+        # static_shapes=False required because we pass 2D continuous features
+        # instead of 1D integer atomic numbers
+        self.backbone = TensorNet(
             hidden_channels=cfg.hidden_dim,
             num_layers=cfg.num_layers,
             num_rbf=cfg.num_rbf,
             rbf_type=cfg.rbf_type,
             trainable_rbf=cfg.trainable_rbf,
             activation="silu",
-            attn_activation="silu",
-            neighbor_embedding=False,
-            num_heads=cfg.num_heads,
-            distance_influence=cfg.distance_influence,
             cutoff_lower=0.0,
             cutoff_upper=cfg.cutoff_radius,
             max_z=2,
             max_num_neighbors=cfg.max_num_neighbors,
+            equivariance_invariance_group=getattr(cfg, "equivariance_invariance_group", "O(3)"),
+            static_shapes=False,
         )
 
         # Replace the default integer atom-type embedding with our input projection
-        self.backbone.embedding = self.input_proj
+        self.backbone.tensor_embedding.emb = self.input_proj
 
         # Equivariant scalar path: predict 2 scalar coefficients from invariant features
         # coeff 0: multiplies force vector F_i (self-mobility correction)
@@ -87,14 +87,9 @@ class HydroTorchMD_ET(nn.Module):
             nn.Linear(cfg.hidden_dim, 2),
         )
 
-        # Equivariant vector path: anisotropic correction from vector features
-        # (N, 3, hidden_dim) -> (N, 3, 1) -> (N, 3)
-        self.output_proj = nn.Linear(cfg.hidden_dim, 1, bias=False)
-
-        # Zero-init last layers so model starts from pure self-mobility baseline
+        # Zero-init last layer so model starts from pure self-mobility baseline
         nn.init.zeros_(self.scalar_head[-1].weight)
         nn.init.zeros_(self.scalar_head[-1].bias)
-        nn.init.zeros_(self.output_proj.weight)
 
     def _compute_neighbor_directions(self, pos, batch, box):
         """Compute mean neighbor direction for each particle.
@@ -126,9 +121,14 @@ class HydroTorchMD_ET(nn.Module):
     def forward(self, data):
         box = getattr(data, "box_vecs", None)
 
-        # Backbone returns (scalar_features, vector_features, z, pos, batch)
-        x_scalar, vec, _, _, _ = self.backbone(
-            z=data.x, pos=data.pos, batch=data.batch, box=box
+        # Backbone returns (scalar_features, None, z, pos, batch)
+        # TensorNet does not output vector features
+        # Pass q=zeros(N) explicitly because TensorNet defaults to q=zeros_like(z),
+        # which would be (N,3) instead of (N,) when z is our 2D force features
+        N = data.x.shape[0]
+        q = torch.zeros(N, device=data.x.device, dtype=data.x.dtype)
+        x_scalar, _, _, _, _ = self.backbone(
+            z=data.x, pos=data.pos, batch=data.batch, box=box, q=q
         )
 
         # Compute equivariant basis vectors
@@ -141,8 +141,5 @@ class HydroTorchMD_ET(nn.Module):
             + coeffs[:, 1:2] * neighbor_dir    # beta * r_hat_agg (interaction correction)
         )
 
-        # Vector path: equivariant anisotropic correction
-        vector_out = self.output_proj(vec).squeeze(-1)  # (N, 3)
-
         # Delta learning: analytical self-mobility + equivariant corrections
-        return self.self_mobility * data.x + scalar_out + vector_out
+        return self.self_mobility * data.x + scalar_out

@@ -1,7 +1,7 @@
-model_type: torchmd_et
+model_type: torchmd_tn
 input_dim: 3                  # forces only (3D)
-hidden_dim: 256
-num_layers: 4
+hidden_dim: 128
+num_layers: 2
 output_dim: 3
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0
@@ -11,8 +11,7 @@ neighbor_strategy: brute
 num_rbf: 32
 rbf_type: expnorm
 trainable_rbf: true
-# Equivariant Transformer attention
-num_heads: 8
-distance_influence: both
+# TensorNet specific
+equivariance_invariance_group: "O(3)"
 # Physics
 hydrodynamic_radius: 1.0

@@ -11,3 +11,5 @@ neighbor_strategy: brute
 num_rbf: 32
 rbf_type: expnorm
 trainable_rbf: true
+# Physics
+hydrodynamic_radius: 1.0

@@ -1,7 +1,6 @@
 """Single-step evaluation metrics.
 
 Computes MSE, MAE, and relative error between predicted and true displacements.
-No denormalization needed — model outputs physical units directly.
 """
 
 import torch
