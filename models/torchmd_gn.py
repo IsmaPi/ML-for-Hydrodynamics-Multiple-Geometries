@@ -85,4 +85,5 @@ class HydroTorchMD_GN(nn.Module):
         )
 
         # Delta learning: analytical self-mobility + learned interaction correction
-        return self.self_mobility * data.x + self.output_head(x)
+        forces = data.x[:, :3]  # first 3 columns are forces (rest is geometry_id)
+        return self.self_mobility * forces + self.output_head(x)

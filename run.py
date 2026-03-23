@@ -154,15 +154,21 @@ def run_evaluate(model_type: str, data_cfg):
     model = lit_model.model
 
     # Pair sweep evaluation — create callables for model and solver
+    from data.generate import GEOMETRY_IDS
+
+    geometry = data_cfg.geometries[0]
+    geo_id = GEOMETRY_IDS[geometry]
+
     def model_fn(positions, forces):
         pos_t = torch.tensor(positions, dtype=torch.float32, device=device)
         f_t = torch.tensor(forces, dtype=torch.float32, device=device)
+        N = positions.shape[0]
+        geo_col = torch.full((N, 1), geo_id, dtype=torch.float32, device=device)
+        x = torch.cat([f_t, geo_col], dim=-1)  # (N, 4)
         from torch_geometric.data import Data
-        data = Data(x=f_t, pos=pos_t)
-        data.batch = torch.zeros(positions.shape[0], dtype=torch.long, device=device)
+        data = Data(x=x, pos=pos_t)
+        data.batch = torch.zeros(N, dtype=torch.long, device=device)
         return model(data).cpu().numpy()
-
-    geometry = data_cfg.geometries[0]
     solver_callable = SolverCallable(
         geometry=geometry,
         viscosity=data_cfg.viscosity,

@@ -81,13 +81,14 @@ class HydroLitModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
-        loss = self._compute_loss(pred, batch.y, batch.x)
+        forces = batch.x[:, :3]
+        loss = self._compute_loss(pred, batch.y, forces)
 
         self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         self.log("lr", self.optimizers().param_groups[0]["lr"], batch_size=batch.num_graphs)
 
         with torch.no_grad():
-            baseline = self.self_mobility * batch.x
+            baseline = self.self_mobility * forces
             correction = pred - baseline
             self.log("train_correction_rms", correction.pow(2).mean().sqrt(),
                      batch_size=batch.num_graphs)
@@ -99,11 +100,12 @@ class HydroLitModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         pred = self.model(batch)
         target = batch.y
-        loss = self._compute_loss(pred, target, batch.x)
+        forces = batch.x[:, :3]
+        loss = self._compute_loss(pred, target, forces)
 
         with torch.no_grad():
             # Baseline: pure self-mobility (no interactions)
-            baseline = self.self_mobility * batch.x
+            baseline = self.self_mobility * forces
             baseline_mse = (baseline - target).pow(2).mean()
             pred_mse = (pred - target).pow(2).mean()
 

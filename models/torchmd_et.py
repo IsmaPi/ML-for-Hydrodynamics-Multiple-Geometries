@@ -1,37 +1,26 @@
 """Equivariant Transformer model for learning the hydrodynamic mobility operator.
 
 Wraps TorchMD-NET's TorchMD_ET backbone to predict per-particle displacements
-from forces and positions. Uses two equivariant output paths:
+from forces and positions. Uses scalar message passing with equivariant attention
+to learn interaction corrections on top of analytical self-mobility.
 
-1. Scalar coefficients x equivariant basis vectors (force dir + neighbor dir)
-   - Provides strong gradient signal to the backbone through scalar features
-   - Maintains equivariance by multiplying invariant scalars with equivariant vectors
-
-2. Equivariant vector features from the ET backbone
-   - Captures residual anisotropic corrections beyond the two basis directions
-
-The model learns: displacement = M(X) . F
+The model learns: displacement = M(X) · F
 where M is the configuration-dependent mobility tensor.
 """
 
 import math
 
-import torch
 import torch.nn as nn
-from torch_geometric.utils import scatter
 from torchmdnet.models.torchmd_et import TorchMD_ET
 
 
 class HydroTorchMD_ET(nn.Module):
     """Equivariant Transformer for predicting hydrodynamic displacements.
 
-    Takes particle positions and forces, predicts displacement = M(X) . F.
-    All output paths are equivariant: invariant scalars x equivariant vectors.
+    Takes particle positions and forces, predicts displacement = M(X) · F.
+    Uses scalar features from ET backbone to predict 3D displacement correction.
 
-    Output = self_mobility * F
-             + alpha * F                  (self-mobility correction, along force)
-             + beta * neighbor_dir        (interaction correction, along neighbors)
-             + vector_out                 (residual equivariant correction)
+    Output = self_mobility * F + output_head(scalar_features)
 
     Args:
         cfg: ModelConfig with architecture hyperparameters.
@@ -78,71 +67,33 @@ class HydroTorchMD_ET(nn.Module):
         # Replace the default integer atom-type embedding with our input projection
         self.backbone.embedding = self.input_proj
 
-        # Equivariant scalar path: predict 2 scalar coefficients from invariant features
-        # coeff 0: multiplies force vector F_i (self-mobility correction)
-        # coeff 1: multiplies neighbor direction (interaction correction)
-        self.scalar_head = nn.Sequential(
+        # Output head: scalar node features -> 3D displacement correction
+        self.output_head = nn.Sequential(
             nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
             nn.SiLU(),
-            nn.Linear(cfg.hidden_dim, 2),
+            nn.Linear(cfg.hidden_dim, cfg.output_dim),
         )
 
-        # Equivariant vector path: anisotropic correction from vector features
-        # (N, 3, hidden_dim) -> (N, 3, 1) -> (N, 3)
-        self.output_proj = nn.Linear(cfg.hidden_dim, 1, bias=False)
+        # Zero-init last layer so model starts from pure self-mobility baseline
+        nn.init.zeros_(self.output_head[-1].weight)
+        nn.init.zeros_(self.output_head[-1].bias)
 
-        # Zero-init last layers so model starts from pure self-mobility baseline
-        nn.init.zeros_(self.scalar_head[-1].weight)
-        nn.init.zeros_(self.scalar_head[-1].bias)
-        nn.init.zeros_(self.output_proj.weight)
-
-    def _compute_neighbor_directions(self, pos, batch, box):
-        """Compute mean neighbor direction for each particle.
-
-        Uses the backbone's distance module to get the same neighbor graph,
-        then aggregates normalized displacement vectors per particle.
-
-        Returns:
-            (N, 3) mean neighbor direction per particle (equivariant).
-            Zero vector for isolated particles with no neighbors.
-        """
-        edge_index, edge_weight, edge_vec = self.backbone.distance(pos, batch, box)
-
-        # Filter out self-loops
-        non_self = edge_index[0] != edge_index[1]
-        edge_idx = edge_index[:, non_self]
-        edge_v = edge_vec[non_self]
-
-        # Normalize to unit direction vectors r_hat_ij
-        norms = edge_v.norm(dim=1, keepdim=True).clamp(min=1e-12)
-        edge_v_unit = edge_v / norms
-
-        # Aggregate: mean neighbor direction per receiver particle
-        N = pos.shape[0]
-        neighbor_dir = scatter(edge_v_unit, edge_idx[1], dim=0, dim_size=N, reduce="mean")
-
-        return neighbor_dir
+        # Equivariant vector path: project vector features to 3D correction
+        # No bias to maintain equivariance; zero-init to start from working baseline
+        self.vector_proj = nn.Linear(cfg.hidden_dim, 1, bias=False)
+        nn.init.zeros_(self.vector_proj.weight)
 
     def forward(self, data):
         box = getattr(data, "box_vecs", None)
 
         # Backbone returns (scalar_features, vector_features, z, pos, batch)
-        x_scalar, vec, _, _, _ = self.backbone(
+        x, vec, _, _, _ = self.backbone(
             z=data.x, pos=data.pos, batch=data.batch, box=box
         )
 
-        # Compute equivariant basis vectors
-        neighbor_dir = self._compute_neighbor_directions(data.pos, data.batch, box)
+        # vec: [N, 3, hidden_dim] → [N, 3, 1] → [N, 3]
+        vector_correction = self.vector_proj(vec).squeeze(-1)
 
-        # Scalar path: 2 invariant coefficients x equivariant directions
-        coeffs = self.scalar_head(x_scalar)  # (N, 2)
-        scalar_out = (
-            coeffs[:, 0:1] * data.x           # alpha * F (self-mobility correction)
-            + coeffs[:, 1:2] * neighbor_dir    # beta * r_hat_agg (interaction correction)
-        )
-
-        # Vector path: equivariant anisotropic correction
-        vector_out = self.output_proj(vec).squeeze(-1)  # (N, 3)
-
-        # Delta learning: analytical self-mobility + equivariant corrections
-        return self.self_mobility * data.x + scalar_out + vector_out
+        # Delta learning: analytical self-mobility + learned corrections
+        forces = data.x[:, :3]  # first 3 columns are forces (rest is geometry_id)
+        return self.self_mobility * forces + self.output_head(x) + vector_correction

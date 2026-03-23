@@ -1,7 +1,7 @@
 model_type: torchmd_et
-input_dim: 3                  # forces only (3D)
-hidden_dim: 256
-num_layers: 4
+input_dim: 4                  # forces (3D) + geometry_id (1D)
+hidden_dim: 128
+num_layers: 2
 output_dim: 3
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0
@@ -12,7 +12,7 @@ num_rbf: 32
 rbf_type: expnorm
 trainable_rbf: true
 # Equivariant Transformer attention
-num_heads: 8
+num_heads: 4
 distance_influence: both
 # Physics
 hydrodynamic_radius: 1.0

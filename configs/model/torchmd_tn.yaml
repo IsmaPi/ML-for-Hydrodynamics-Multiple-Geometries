@@ -1,5 +1,5 @@
 model_type: torchmd_tn
-input_dim: 3                  # forces only (3D)
+input_dim: 4                  # forces (3D) + geometry_id (1D)
 hidden_dim: 128
 num_layers: 2
 output_dim: 3
