@@ -1,6 +1,6 @@
 model_type: torchmd_tn
-hidden_dim: 64
-num_layers: 3
+hidden_dim: 128
+num_layers: 5
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0
 max_num_neighbors: 65
@@ -12,4 +12,4 @@ trainable_rbf: true
 # TensorNet specific
 equivariance_invariance_group: "O(3)"
 # Mobility head (predicts alpha/beta per edge)
-mobility_hidden_dim: 64
+mobility_hidden_dim: 128

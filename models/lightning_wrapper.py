@@ -7,7 +7,9 @@ Works with HydroTorchMD_ET, HydroTorchMD_TN, and HydroTorchMD_GN.
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau, SequentialLR, LinearLR
+from torch.optim.lr_scheduler import (
+    ReduceLROnPlateau, SequentialLR, LinearLR, CosineAnnealingWarmRestarts,
+)
 
 try:
     import pytorch_lightning as pl
@@ -201,16 +203,23 @@ class HydroLitModule(pl.LightningModule):
         )
 
         warmup_epochs = getattr(self.train_cfg, "warmup_epochs", 0)
-        plateau = ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=15, min_lr=1e-6
+
+        # CosineAnnealingWarmRestarts decays LR on a cosine schedule with
+        # periodic restarts.  Unlike ReduceLROnPlateau it doesn't need a
+        # metric, so it works correctly inside SequentialLR.
+        cosine = CosineAnnealingWarmRestarts(
+            optimizer, T_0=50, T_mult=2, eta_min=1e-6
         )
 
         if warmup_epochs > 0:
-            warmup = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs)
-            scheduler = SequentialLR(optimizer, [warmup, plateau],
-                                    milestones=[warmup_epochs])
+            warmup = LinearLR(
+                optimizer, start_factor=0.01, total_iters=warmup_epochs
+            )
+            scheduler = SequentialLR(
+                optimizer, [warmup, cosine], milestones=[warmup_epochs]
+            )
         else:
-            scheduler = plateau
+            scheduler = cosine
 
         return {
             "optimizer": optimizer,
