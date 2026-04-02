@@ -38,6 +38,7 @@ from evaluation.pair_sweep import (
     evaluate_pair_sweep, plot_pair_sweep,
     plot_pair_sweep_both_particles, plot_pair_sweep_error,
 )
+from utils.plotting import generate_all_plots
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def run_train(model_type: str, data_cfg, model_cfg, train_cfg):
         batch_size=train_cfg.batch_size,
         seed=train_cfg.seed,
     )
-
+        
     lit_model = HydroLitModule(model_cfg, train_cfg)
     total_params = sum(p.numel() for p in lit_model.parameters())
     log.info("Model parameters: %s", f"{total_params:,}")
@@ -109,7 +110,7 @@ def run_train(model_type: str, data_cfg, model_cfg, train_cfg):
                 filename="best",
             ),
         ],
-        logger=TensorBoardLogger("logs/", name=run_name),
+        logger=TensorBoardLogger("lightning_logs/", name=run_name),
         log_every_n_steps=10,
     )
 
@@ -117,6 +118,19 @@ def run_train(model_type: str, data_cfg, model_cfg, train_cfg):
     log.info("Training complete. Best model: saved_models/%s/best.ckpt", run_name)
 
     trainer.test(lit_model, datamodule)
+
+    # Generate diagnostic plots → TensorBoard Images tab + PNGs on disk
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    lit_model.to(device)
+    lit_model.eval()
+    datamodule.setup()
+
+    results_dir = Path("results") / model_type
+    tb_writer = trainer.logger.experiment if trainer.logger else None
+    generate_all_plots(
+        lit_model.model, datamodule, device, results_dir,
+        tb_writer=tb_writer, global_step=trainer.current_epoch,
+    )
 
     return run_name
 
@@ -163,10 +177,12 @@ def run_evaluate(model_type: str, data_cfg):
         pos_t = torch.tensor(positions, dtype=torch.float32, device=device)
         f_t = torch.tensor(forces, dtype=torch.float32, device=device)
         N = positions.shape[0]
-        geo_col = torch.full((N, 1), geo_id, dtype=torch.float32, device=device)
-        x = torch.cat([f_t, geo_col], dim=-1)  # (N, 4)
         from torch_geometric.data import Data
-        data = Data(x=x, pos=pos_t)
+        data = Data(
+            x=torch.ones(N, dtype=torch.long, device=device),
+            pos=pos_t,
+            forces=f_t,
+        )
         data.batch = torch.zeros(N, dtype=torch.long, device=device)
         return model(data).cpu().numpy()
     solver_callable = SolverCallable(
@@ -191,6 +207,12 @@ def run_evaluate(model_type: str, data_cfg):
     plot_pair_sweep(pair_results, save_path=str(results_dir / "pair_sweep_p2.png"), particle_idx=1)
     plot_pair_sweep_both_particles(pair_results, save_path=str(results_dir / "pair_sweep_both.png"))
     plot_pair_sweep_error(pair_results, save_path=str(results_dir / "pair_sweep_error.png"))
+
+    # Generate all diagnostic plots → TensorBoard + PNGs
+    from torch.utils.tensorboard import SummaryWriter
+    tb_writer = SummaryWriter(log_dir=f"lightning_logs/{model_type}_eval")
+    generate_all_plots(model, datamodule, device, results_dir, tb_writer=tb_writer)
+    tb_writer.close()
 
 
 

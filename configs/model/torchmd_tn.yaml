@@ -1,11 +1,9 @@
 model_type: torchmd_tn
-input_dim: 4                  # forces (3D) + geometry_id (1D)
-hidden_dim: 128
-num_layers: 2
-output_dim: 3
+hidden_dim: 64
+num_layers: 3
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0
-max_num_neighbors: 128
+max_num_neighbors: 65
 neighbor_strategy: brute
 # RBF distance encoding
 num_rbf: 32
@@ -13,5 +11,5 @@ rbf_type: expnorm
 trainable_rbf: true
 # TensorNet specific
 equivariance_invariance_group: "O(3)"
-# Physics
-hydrodynamic_radius: 1.0
+# Mobility head (predicts alpha/beta per edge)
+mobility_hidden_dim: 64

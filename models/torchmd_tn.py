@@ -1,34 +1,25 @@
 """TensorNet model for learning the hydrodynamic mobility operator.
 
 Wraps TorchMD-NET's TensorNet backbone to predict per-particle displacements
-from forces and positions. Uses scalar message passing with tensor product
-interactions to learn interaction corrections on top of analytical self-mobility.
-
-The model learns: displacement = M(X) · F
-where M is the configuration-dependent mobility tensor.
+from forces and positions. The backbone processes only positions to produce
+per-node features, then a MobilityHead predicts displacement = M(X) · F,
+enforcing linearity in forces by construction.
 """
-
-import math
 
 import torch
 import torch.nn as nn
 from torchmdnet.models.tensornet import TensorNet
 
+from models.mobility_head import MobilityHead
+
 
 class HydroTorchMD_TN(nn.Module):
     """TensorNet for predicting hydrodynamic displacements.
 
-    Takes particle positions and forces, predicts displacement = M(X) · F.
-    Uses scalar features from TensorNet backbone to predict 3D displacement correction.
-
-    Output = self_mobility * F + output_head(scalar_features)
-
-    Args:
-        cfg: ModelConfig with architecture hyperparameters.
-
     Forward input:
-        data.x:        (N, input_dim) per-particle forces
         data.pos:      (N, 3) particle positions
+        data.x:        (N,) integer atom types (all ones)
+        data.forces:   (N, 3) per-particle forces
         data.batch:    (N,) batch assignment
         data.box_vecs: (3, 3) periodic box or None
 
@@ -39,17 +30,6 @@ class HydroTorchMD_TN(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        # Analytical self-mobility: U_self = F / (6*pi*eta*a)
-        viscosity = getattr(cfg, "viscosity", 1.0)
-        a = getattr(cfg, "hydrodynamic_radius", 1.0)
-        self.self_mobility = 1.0 / (6.0 * math.pi * viscosity * a)
-
-        # Input projection: continuous force features -> hidden dim
-        self.input_proj = nn.Linear(cfg.input_dim, cfg.hidden_dim)
-
-        # TorchMD-NET TensorNet backbone
-        # static_shapes=False required because we pass 2D continuous features
-        # instead of 1D integer atomic numbers
         self.backbone = TensorNet(
             hidden_channels=cfg.hidden_dim,
             num_layers=cfg.num_layers,
@@ -65,54 +45,42 @@ class HydroTorchMD_TN(nn.Module):
             static_shapes=False,
         )
 
-        # Replace the default integer atom-type embedding with our input projection
-        self.backbone.tensor_embedding.emb = self.input_proj
+        self.backbone.tensor_embedding.emb=nn.Linear(3, cfg.hidden_dim)
 
-        # Output head: scalar node features -> 3D displacement correction
         self.output_head = nn.Sequential(
             nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
             nn.SiLU(),
-            nn.Linear(cfg.hidden_dim, cfg.output_dim),
+            nn.Linear(cfg.hidden_dim, 3)
         )
 
-        # Zero-init last layer so model starts from pure self-mobility baseline
-        nn.init.zeros_(self.output_head[-1].weight)
-        nn.init.zeros_(self.output_head[-1].bias)
+        mobility_hidden = getattr(cfg, "mobility_hidden_dim", 64)
+        self.mobility_head = MobilityHead(
+            node_dim=cfg.hidden_dim,
+            hidden_dim=mobility_hidden,
+            cutoff_upper=cfg.cutoff_radius,
+        )
 
-        # Equivariant vector path: extract vectors from antisymmetric tensor component
-        # No bias to maintain equivariance; zero-init to start from working baseline
-        self.vector_proj = nn.Linear(cfg.hidden_dim, 1, bias=False)
-        nn.init.zeros_(self.vector_proj.weight)
+        # Hook to capture edge data from backbone's distance module
+        self._edge_cache = {}
 
-        # Hook to capture final tensor X from last interaction layer
-        self._last_X = None
+        def _capture_edges(module, input, output):
+            self._edge_cache["edge_index"] = output[0]
+            self._edge_cache["edge_weight"] = output[1]
+            self._edge_cache["edge_vec"] = output[2]
 
-        def _capture_X(module, input, output):
-            self._last_X = output
-
-        self.backbone.layers[-1].register_forward_hook(_capture_X)
+        self.backbone.distance.register_forward_hook(_capture_edges)
 
     def forward(self, data):
         box = getattr(data, "box_vecs", None)
+        if box is not None:
+            box = box.view(-1, 3, 3)
 
-        # Backbone returns (scalar_features, None, z, pos, batch)
-        # Pass q=zeros(N) explicitly because TensorNet defaults to q=zeros_like(z),
-        # which would be (N,3) instead of (N,) when z is our 2D force features
-        N = data.x.shape[0]
-        q = torch.zeros(N, device=data.x.device, dtype=data.x.dtype)
+        # Backbone: positions only -> node features
+        N = data.pos.shape[0]
+        q = torch.zeros(N, device=data.pos.device, dtype=data.pos.dtype)
         x, _, _, _, _ = self.backbone(
-            z=data.x, pos=data.pos, batch=data.batch, box=box, q=q
+            z=data.forces, pos=data.pos, batch=data.batch, box=box, q=q
         )
 
-        # Extract equivariant vectors from captured tensor
-        # Use raw antisymmetric part directly (avoids opt/non-opt decompose_tensor mismatch)
-        X = self._last_X                                    # [N, 3, 3, hidden_channels]
-        A = 0.5 * (X - X.transpose(1, 2))                   # antisymmetric part
-        vec = torch.stack([A[:, 1, 2, :] - A[:, 2, 1, :],   # extract vector from skew-symmetric
-                           A[:, 2, 0, :] - A[:, 0, 2, :],
-                           A[:, 0, 1, :] - A[:, 1, 0, :]], dim=1)  # [N, 3, hidden_channels]
-        vector_correction = self.vector_proj(vec).squeeze(-1)  # [N, 3]
-
-        # Delta learning: analytical self-mobility + learned corrections
-        forces = data.x[:, :3]  # first 3 columns are forces (rest is geometry_id)
-        return self.self_mobility * forces + self.output_head(x) + vector_correction
+        # MobilityHead: M(positions) · F
+        return self.output_head(x)

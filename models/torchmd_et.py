@@ -1,33 +1,24 @@
 """Equivariant Transformer model for learning the hydrodynamic mobility operator.
 
 Wraps TorchMD-NET's TorchMD_ET backbone to predict per-particle displacements
-from forces and positions. Uses scalar message passing with equivariant attention
-to learn interaction corrections on top of analytical self-mobility.
-
-The model learns: displacement = M(X) · F
-where M is the configuration-dependent mobility tensor.
+from forces and positions. The backbone processes only positions to produce
+per-node features, then a MobilityHead predicts displacement = M(X) · F,
+enforcing linearity in forces by construction.
 """
-
-import math
 
 import torch.nn as nn
 from torchmdnet.models.torchmd_et import TorchMD_ET
+
+from models.mobility_head import MobilityHead
 
 
 class HydroTorchMD_ET(nn.Module):
     """Equivariant Transformer for predicting hydrodynamic displacements.
 
-    Takes particle positions and forces, predicts displacement = M(X) · F.
-    Uses scalar features from ET backbone to predict 3D displacement correction.
-
-    Output = self_mobility * F + output_head(scalar_features)
-
-    Args:
-        cfg: ModelConfig with architecture hyperparameters.
-
     Forward input:
-        data.x:        (N, input_dim) per-particle forces
         data.pos:      (N, 3) particle positions
+        data.x:        (N,) integer atom types (all ones)
+        data.forces:   (N, 3) per-particle forces
         data.batch:    (N,) batch assignment
         data.box_vecs: (3, 3) periodic box or None
 
@@ -38,15 +29,6 @@ class HydroTorchMD_ET(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        # Analytical self-mobility: U_self = F / (6*pi*eta*a)
-        viscosity = getattr(cfg, "viscosity", 1.0)
-        a = getattr(cfg, "hydrodynamic_radius", 1.0)
-        self.self_mobility = 1.0 / (6.0 * math.pi * viscosity * a)
-
-        # Input projection: continuous force features -> hidden dim
-        self.input_proj = nn.Linear(cfg.input_dim, cfg.hidden_dim)
-
-        # TorchMD-NET Equivariant Transformer backbone
         self.backbone = TorchMD_ET(
             hidden_channels=cfg.hidden_dim,
             num_layers=cfg.num_layers,
@@ -55,7 +37,7 @@ class HydroTorchMD_ET(nn.Module):
             trainable_rbf=cfg.trainable_rbf,
             activation="silu",
             attn_activation="silu",
-            neighbor_embedding=False,
+            neighbor_embedding=True,
             num_heads=cfg.num_heads,
             distance_influence=cfg.distance_influence,
             cutoff_lower=0.0,
@@ -64,36 +46,39 @@ class HydroTorchMD_ET(nn.Module):
             max_num_neighbors=cfg.max_num_neighbors,
         )
 
-        # Replace the default integer atom-type embedding with our input projection
-        self.backbone.embedding = self.input_proj
-
-        # Output head: scalar node features -> 3D displacement correction
-        self.output_head = nn.Sequential(
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
-            nn.SiLU(),
-            nn.Linear(cfg.hidden_dim, cfg.output_dim),
+        mobility_hidden = getattr(cfg, "mobility_hidden_dim", 64)
+        self.mobility_head = MobilityHead(
+            node_dim=cfg.hidden_dim,
+            hidden_dim=mobility_hidden,
+            cutoff_upper=cfg.cutoff_radius
         )
 
-        # Zero-init last layer so model starts from pure self-mobility baseline
-        nn.init.zeros_(self.output_head[-1].weight)
-        nn.init.zeros_(self.output_head[-1].bias)
+        # Hook to capture edge data from backbone's distance module
+        self._edge_cache = {}
 
-        # Equivariant vector path: project vector features to 3D correction
-        # No bias to maintain equivariance; zero-init to start from working baseline
-        self.vector_proj = nn.Linear(cfg.hidden_dim, 1, bias=False)
-        nn.init.zeros_(self.vector_proj.weight)
+        def _capture_edges(module, input, output):
+            self._edge_cache["edge_index"] = output[0]
+            self._edge_cache["edge_weight"] = output[1]
+            self._edge_cache["edge_vec"] = output[2]
+
+        self.backbone.distance.register_forward_hook(_capture_edges)
 
     def forward(self, data):
         box = getattr(data, "box_vecs", None)
+        if box is not None:
+            # PyG concatenates per-graph (3,3) into (B*3, 3); reshape to (B, 3, 3)
+            box = box.view(-1, 3, 3)
 
-        # Backbone returns (scalar_features, vector_features, z, pos, batch)
+        # Backbone: positions only -> node features
+        # z=data.x are integer atom types (all 1s), not forces
         x, vec, _, _, _ = self.backbone(
             z=data.x, pos=data.pos, batch=data.batch, box=box
         )
 
-        # vec: [N, 3, hidden_dim] → [N, 3, 1] → [N, 3]
-        vector_correction = self.vector_proj(vec).squeeze(-1)
+        # Get edges captured by hook
+        edge_index = self._edge_cache["edge_index"]
+        edge_weight = self._edge_cache["edge_weight"]
+        edge_vec = self._edge_cache["edge_vec"]
 
-        # Delta learning: analytical self-mobility + learned corrections
-        forces = data.x[:, :3]  # first 3 columns are forces (rest is geometry_id)
-        return self.self_mobility * forces + self.output_head(x) + vector_correction
+        # MobilityHead: M(positions) · F
+        return self.mobility_head(x, edge_index, edge_weight, edge_vec, data.forces)

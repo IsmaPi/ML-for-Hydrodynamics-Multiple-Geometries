@@ -27,9 +27,8 @@ class ModelConfig:
     neighbor_strategy: str = "brute"
     # TensorNet specific
     equivariance_invariance_group: str = "O(3)"
-    # Physics: viscosity = 1/(6*pi) so self_mobility = 1
-    viscosity: float = 1.0 / (6.0 * math.pi)
-    hydrodynamic_radius: float = 1.0
+    # Mobility head (predicts alpha/beta per edge)
+    mobility_hidden_dim: int = 64
 
 
 @dataclass
