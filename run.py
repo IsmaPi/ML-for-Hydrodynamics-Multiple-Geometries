@@ -182,6 +182,7 @@ def run_evaluate(model_type: str, data_cfg):
             x=torch.ones(N, dtype=torch.long, device=device),
             pos=pos_t,
             forces=f_t,
+            geometry_id=torch.tensor(float(geo_id), device=device),
         )
         data.batch = torch.zeros(N, dtype=torch.long, device=device)
         return model(data).cpu().numpy()

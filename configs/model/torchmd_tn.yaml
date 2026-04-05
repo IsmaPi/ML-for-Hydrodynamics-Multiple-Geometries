@@ -1,6 +1,6 @@
 model_type: torchmd_tn
 hidden_dim: 128
-num_layers: 5
+num_layers: 3
 # TorchMD-NET neighbor list
 cutoff_radius: 30.0
 max_num_neighbors: 65

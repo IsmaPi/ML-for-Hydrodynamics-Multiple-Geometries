@@ -36,7 +36,7 @@ class DataConfig:
     """Data generation and loading configuration."""
     geometries: List[str] = field(default_factory=lambda: ["nbody_open", "pse_periodic"])
     num_particles: List[int] = field(default_factory=lambda: [16, 32, 64])
-    num_cloud_samples: int = 5000       # per geometry per N
+    num_cloud_samples: int = 10000      # per geometry per N
     num_pair_samples: int = 2000        # per geometry
     pair_d_min: float = 2.0             # minimum pair distance (units of a)
     pair_d_max: float = 20.0            # maximum pair distance (units of a)
