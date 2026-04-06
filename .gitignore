@@ -2,7 +2,6 @@
 data/
 checkpoints/
 saved_models/
-results/
 logs/
 training_log.txt
 
