@@ -1,8 +1,7 @@
 """Diagnostic plot functions for hydrodynamic displacement models.
 
 All plot functions take raw tensors and return a matplotlib Figure.
-Used by the DiagnosticPlotsCallback to log figures to TensorBoard during
-training, and to save final PNGs after training completes.
+Called after training and during evaluation to save diagnostic PNGs.
 """
 
 from pathlib import Path
@@ -259,7 +258,8 @@ def plot_error_vs_force(data):
     force_mag = data["force_norm"].numpy()
     rel_err = data["relative_error"].numpy()
 
-    valid = force_mag > 1e-8
+    # Exclude zero-error points for log scale
+    valid = (force_mag > 1e-8) & (rel_err > 1e-12)
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.hexbin(force_mag[valid], rel_err[valid], gridsize=80, mincnt=1,

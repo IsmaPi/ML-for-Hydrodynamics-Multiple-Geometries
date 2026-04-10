@@ -11,5 +11,5 @@ rbf_type: expnorm
 trainable_rbf: true
 # TensorNet specific
 equivariance_invariance_group: "O(3)"
-# Mobility head (predicts alpha/beta per edge)
+# Output head hidden dimension
 mobility_hidden_dim: 128

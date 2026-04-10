@@ -2,13 +2,13 @@
 """Main pipeline: generate data -> train model -> evaluate.
 
 Usage:
-    python run.py --stage all --model torchmd_et
-    python run.py --stage generate --data-config default
-    python run.py --stage train --model torchmd_et
-    python run.py --stage evaluate --model torchmd_et
+    python run.py --stage all --model torchmd_tn
+    python run.py --stage train --model torchmd_tn
+    python run.py --stage evaluate --model torchmd_tn
 """
 
 import argparse
+import glob
 import logging
 import sys
 from pathlib import Path
@@ -39,6 +39,7 @@ from evaluation.pair_sweep import (
     plot_pair_sweep_both_particles, plot_pair_sweep_error,
 )
 from utils.plotting import generate_all_plots
+from scripts.plot_training_curves import plot_loss_curves
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +133,11 @@ def run_train(model_type: str, data_cfg, model_cfg, train_cfg):
         tb_writer=tb_writer, global_step=trainer.current_epoch,
     )
 
+    # Training curves from TensorBoard logs
+    tb_log_dir = f"lightning_logs/{run_name}/version_0"
+    curves_dir = results_dir / "training_curves"
+    plot_loss_curves(tb_log_dir, str(curves_dir))
+
     return run_name
 
 
@@ -167,53 +173,71 @@ def run_evaluate(model_type: str, data_cfg):
     lit_model.eval()
     model = lit_model.model
 
-    # Pair sweep evaluation — create callables for model and solver
-    from data.generate import GEOMETRY_IDS
-
-    geometry = data_cfg.geometries[0]
-    geo_id = GEOMETRY_IDS[geometry]
-
-    def model_fn(positions, forces):
-        pos_t = torch.tensor(positions, dtype=torch.float32, device=device)
-        f_t = torch.tensor(forces, dtype=torch.float32, device=device)
-        N = positions.shape[0]
-        from torch_geometric.data import Data
-        data = Data(
-            x=torch.ones(N, dtype=torch.long, device=device),
-            pos=pos_t,
-            forces=f_t,
-            geometry_id=torch.tensor(float(geo_id), device=device),
-        )
-        data.batch = torch.zeros(N, dtype=torch.long, device=device)
-        return model(data).cpu().numpy()
-    solver_callable = SolverCallable(
-        geometry=geometry,
-        viscosity=data_cfg.viscosity,
-        a=data_cfg.hydrodynamic_radius,
-        box_size=data_cfg.box_size,
-    )
-
-    pair_results = evaluate_pair_sweep(
-        model_fn, solver_callable,
-        viscosity=data_cfg.viscosity,
-        a=data_cfg.hydrodynamic_radius,
-        box_size=data_cfg.box_size,
-        periodic=(geometry == "pse_periodic"),
-    )
-    solver_callable.clean()
-
     results_dir = Path("results") / model_type
-    results_dir.mkdir(parents=True, exist_ok=True)
-    plot_pair_sweep(pair_results, save_path=str(results_dir / "pair_sweep_p1.png"), particle_idx=0)
-    plot_pair_sweep(pair_results, save_path=str(results_dir / "pair_sweep_p2.png"), particle_idx=1)
-    plot_pair_sweep_both_particles(pair_results, save_path=str(results_dir / "pair_sweep_both.png"))
-    plot_pair_sweep_error(pair_results, save_path=str(results_dir / "pair_sweep_error.png"))
 
-    # Generate all diagnostic plots → TensorBoard + PNGs
+    # Generate all diagnostic plots first (this wipes top-level PNGs in results_dir)
     from torch.utils.tensorboard import SummaryWriter
     tb_writer = SummaryWriter(log_dir=f"lightning_logs/{model_type}_eval")
     generate_all_plots(model, datamodule, device, results_dir, tb_writer=tb_writer)
     tb_writer.close()
+
+    # Training curves from TensorBoard logs
+    tb_logs = sorted(glob.glob(f"lightning_logs/{model_type}/run_*/version_0"))
+    if tb_logs:
+        curves_dir = results_dir / "training_curves"
+        plot_loss_curves(tb_logs[-1], str(curves_dir))
+
+    # Pair sweep evaluation for ALL geometries — runs AFTER the wipe,
+    # saved to a pair_sweep/ subdirectory so they persist.
+    from data.generate import GEOMETRY_IDS
+    from torch_geometric.data import Data as PygData
+
+    sweep_dir = results_dir / "pair_sweep"
+    sweep_dir.mkdir(parents=True, exist_ok=True)
+
+    for geometry in data_cfg.geometries:
+        geo_id = GEOMETRY_IDS[geometry]
+        log.info("Pair sweep: %s ...", geometry)
+
+        is_periodic = (geometry == "pse_periodic")
+        L = data_cfg.box_size if is_periodic else 1e6
+
+        def model_fn(positions, forces, _geo_id=geo_id, _L=L):
+            pos_t = torch.tensor(positions, dtype=torch.float32, device=device)
+            f_t = torch.tensor(forces, dtype=torch.float32, device=device)
+            N = positions.shape[0]
+            data = PygData(
+                x=torch.ones(N, dtype=torch.long, device=device),
+                pos=pos_t,
+                forces=f_t,
+                geometry_id=torch.tensor(float(_geo_id), device=device),
+                box_vecs=torch.tensor([[_L,0,0],[0,_L,0],[0,0,_L]],
+                                      dtype=torch.float32, device=device),
+            )
+            data.batch = torch.zeros(N, dtype=torch.long, device=device)
+            return model(data).cpu().numpy()
+
+        solver_callable = SolverCallable(
+            geometry=geometry,
+            viscosity=data_cfg.viscosity,
+            a=data_cfg.hydrodynamic_radius,
+            box_size=data_cfg.box_size,
+        )
+
+        pair_results = evaluate_pair_sweep(
+            model_fn, solver_callable,
+            viscosity=data_cfg.viscosity,
+            a=data_cfg.hydrodynamic_radius,
+            box_size=data_cfg.box_size,
+            periodic=(geometry == "pse_periodic"),
+        )
+        solver_callable.clean()
+
+        suffix = f"_{geometry}"
+        plot_pair_sweep(pair_results, save_path=str(sweep_dir / f"pair_sweep_p1{suffix}.png"), particle_idx=0)
+        plot_pair_sweep(pair_results, save_path=str(sweep_dir / f"pair_sweep_p2{suffix}.png"), particle_idx=1)
+        plot_pair_sweep_both_particles(pair_results, save_path=str(sweep_dir / f"pair_sweep_both{suffix}.png"))
+        plot_pair_sweep_error(pair_results, save_path=str(sweep_dir / f"pair_sweep_error{suffix}.png"))
 
 
 

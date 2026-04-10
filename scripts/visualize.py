@@ -27,6 +27,10 @@ PLOT_CHOICES = [
     "rollout",
     "error_distributions",
     "model_comparison",
+    "tb_training_curves",
+    "pair_sweep_both_geometries",
+    "nbody_accuracy_vs_N",
+    "pse_accuracy_vs_boxsize",
 ]
 
 
@@ -316,6 +320,282 @@ def plot_model_comparison(results_dirs: list, output_dir: Path):
     _save_fig(fig, output_dir, "model_comparison")
 
 
+# ── Live-evaluation plots (load model + solver, generate data) ───────
+
+def _find_latest_checkpoint(model_type="torchmd_tn"):
+    parent = Path("saved_models") / model_type
+    runs = sorted(parent.glob("run_*/best.ckpt"))
+    if not runs:
+        return None
+    return str(runs[-1])
+
+
+def _load_model_and_config(device):
+    """Load the latest TN checkpoint and return (model, data_cfg)."""
+    import torch
+    from models.lightning_wrapper import HydroLitModule
+    from utils.config import DataConfig
+
+    ckpt = _find_latest_checkpoint()
+    if ckpt is None:
+        print("  No checkpoint found for torchmd_tn")
+        return None, None
+    print(f"  Loading checkpoint: {ckpt}")
+    lit = HydroLitModule.load_from_checkpoint(ckpt)
+    lit.eval()
+    lit.to(device)
+    return lit.model, DataConfig()
+
+
+def _make_model_fn(model, device, geometry):
+    """Callable (positions, forces) -> displacement ndarray."""
+    import torch
+    from torch_geometric.data import Data
+    from data.generate import GEOMETRY_IDS
+
+    geo_id = GEOMETRY_IDS[geometry]
+
+    def fn(positions, forces):
+        N = positions.shape[0]
+        data = Data(
+            x=torch.ones(N, dtype=torch.long, device=device),
+            pos=torch.tensor(positions, dtype=torch.float32, device=device),
+            forces=torch.tensor(forces, dtype=torch.float32, device=device),
+            geometry_id=torch.tensor(float(geo_id), device=device),
+        )
+        data.batch = torch.zeros(N, dtype=torch.long, device=device)
+        return model(data).cpu().numpy()
+
+    return fn
+
+
+def _evaluate_cloud(model, device, geometry, N, data_cfg, num_samples=20,
+                    seed=777, box_size_override=None):
+    """Return (mean_rel_error, std_rel_error) over random cloud samples."""
+    import torch
+    from torch_geometric.data import Data
+    from data.generate import (
+        _sample_positions, _sample_forces, create_solver, GEOMETRY_IDS,
+    )
+
+    rng = np.random.default_rng(seed)
+    geo_id = GEOMETRY_IDS[geometry]
+    box_size = box_size_override if box_size_override is not None else data_cfg.box_size
+
+    solver = create_solver(geometry, data_cfg.viscosity,
+                           data_cfg.hydrodynamic_radius, box_size)
+    rel_errors = []
+
+    for _ in range(num_samples):
+        positions = _sample_positions(N, geometry, rng,
+                                      a=data_cfg.hydrodynamic_radius,
+                                      box_size=box_size)
+        forces = _sample_forces(N, data_cfg.force_scale, rng)
+        solver.setPositions(positions)
+        displacement, _ = solver.Mdot(forces=forces)
+        displacement = np.array(displacement, dtype=np.float32).reshape(N, 3)
+
+        L = box_size if geometry == "pse_periodic" else 1e6
+        data = Data(
+            x=torch.ones(N, dtype=torch.long, device=device),
+            pos=torch.tensor(positions, dtype=torch.float32, device=device),
+            forces=torch.tensor(forces, dtype=torch.float32, device=device),
+            geometry_id=torch.tensor(float(geo_id), device=device),
+            box_vecs=torch.tensor([[L, 0, 0], [0, L, 0], [0, 0, L]],
+                                  dtype=torch.float32, device=device),
+        )
+        data.batch = torch.zeros(N, dtype=torch.long, device=device)
+        data.num_nodes = N
+
+        with torch.no_grad():
+            pred = model(data).cpu().numpy()
+
+        tnorm = np.maximum(np.linalg.norm(displacement, axis=-1, keepdims=True), 1e-8)
+        rel = np.linalg.norm(pred - displacement, axis=-1, keepdims=True) / tnorm
+        rel_errors.append(rel.mean())
+
+    solver.clean()
+    return float(np.mean(rel_errors)), float(np.std(rel_errors))
+
+
+def plot_tb_training_curves(output_dir: Path, model_type="torchmd_tn"):
+    """Read TensorBoard event files and plot train/val loss + per-geometry error."""
+    import glob
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    logs = sorted(glob.glob(f"lightning_logs/{model_type}/run_*/version_0"))
+    if not logs:
+        print("  Skipping tb_training_curves: no TensorBoard logs found")
+        return
+    ea = EventAccumulator(logs[-1])
+    ea.Reload()
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: train + val loss
+    ax = axes[0]
+    for tag, label, color in [("train_loss", "Train", "tab:blue"),
+                               ("val_loss", "Validation", "tab:orange")]:
+        if tag not in ea.Tags()["scalars"]:
+            continue
+        events = ea.Scalars(tag)
+        vals = [e.value for e in events]
+        if tag == "train_loss":
+            n_val = len(ea.Scalars("val_loss")) if "val_loss" in ea.Tags()["scalars"] else 1
+            spe = len(vals) / max(n_val, 1)
+            xs = [s / spe for s in range(len(vals))]
+            ax.plot(xs, vals, color=color, alpha=0.15, linewidth=0.5)
+            w = max(1, len(vals) // 80)
+            sm = np.convolve(vals, np.ones(w) / w, mode="valid")
+            ax.plot(np.linspace(xs[0], xs[-1], len(sm)), sm,
+                    color=color, linewidth=2, label=f"{label} (smoothed)")
+        else:
+            ax.plot(range(len(vals)), vals, color=color, linewidth=2, label=label)
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss (relative MSE)")
+    ax.set_title("Training and Validation Loss")
+    ax.set_yscale("log")
+    ax.legend()
+
+    # Right: per-geometry val relative error
+    ax = axes[1]
+    for tag, label, color in [("val_rel_error", "Overall", "black"),
+                               ("val_rel_error_nbody", "NBody open", "tab:blue"),
+                               ("val_rel_error_pse", "PSE periodic", "tab:orange")]:
+        if tag not in ea.Tags()["scalars"]:
+            continue
+        vals = [e.value for e in ea.Scalars(tag)]
+        ax.plot(range(len(vals)), vals, color=color, linewidth=2, label=label)
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Relative Error")
+    ax.set_title("Validation Relative Error by Geometry")
+    ax.legend()
+
+    fig.tight_layout()
+    _save_fig(fig, output_dir, "tb_training_curves")
+
+
+def plot_pair_sweep_both_geometries(output_dir: Path):
+    """Pair sweep comparison for both NBody and PSE geometries."""
+    import torch
+    from evaluation.pair_sweep import evaluate_pair_sweep
+    from evaluation.pair_sweep import plot_pair_sweep_both_particles, plot_pair_sweep_error
+    from utils.solver import SolverCallable
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, data_cfg = _load_model_and_config(device)
+    if model is None:
+        return
+
+    for geometry in ["nbody_open", "pse_periodic"]:
+        print(f"  Pair sweep: {geometry} ...")
+        model_fn = _make_model_fn(model, device, geometry)
+        solver = SolverCallable(
+            geometry=geometry, viscosity=data_cfg.viscosity,
+            a=data_cfg.hydrodynamic_radius, box_size=data_cfg.box_size,
+        )
+        results = evaluate_pair_sweep(
+            model_fn, solver, viscosity=data_cfg.viscosity,
+            a=data_cfg.hydrodynamic_radius, box_size=data_cfg.box_size,
+            periodic=(geometry == "pse_periodic"),
+        )
+        solver.clean()
+
+        fig = plot_pair_sweep_both_particles(results)
+        fig.suptitle(f"Pair Sweep: {geometry}", fontsize=14)
+        fig.tight_layout()
+        _save_fig(fig, output_dir, f"pair_sweep_{geometry}")
+
+        fig = plot_pair_sweep_error(results)
+        fig.suptitle(f"Pair Sweep Error: {geometry}", fontsize=14)
+        fig.tight_layout()
+        _save_fig(fig, output_dir, f"pair_sweep_error_{geometry}")
+
+
+def plot_nbody_accuracy_vs_N(output_dir: Path):
+    """NBody open: relative error vs number of particles N."""
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, data_cfg = _load_model_and_config(device)
+    if model is None:
+        return
+
+    particle_counts = [8, 16, 32, 64, 128, 256, 512]
+    means, stds, actual_counts = [], [], []
+
+    for N in particle_counts:
+        print(f"  NBody N={N} ...")
+        try:
+            m, s = _evaluate_cloud(model, device, "nbody_open", N, data_cfg,
+                                    num_samples=20, seed=42 + N)
+            means.append(m)
+            stds.append(s)
+            actual_counts.append(N)
+            print(f"    rel_error = {m:.4f} +/- {s:.4f}")
+        except Exception as e:
+            print(f"    N={N} failed: {e}")
+            break
+
+    if not means:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.errorbar(actual_counts, means, yerr=stds, fmt="o-", capsize=5,
+                linewidth=2, markersize=8, color="tab:blue")
+    ax.axvspan(0, 64, alpha=0.1, color="green", label="Training range (N <= 64)")
+    ax.axvline(64, color="green", ls="--", alpha=0.5)
+    ax.set_xlabel("Number of particles (N)")
+    ax.set_ylabel("Mean relative error")
+    ax.set_title("NBody Open: Accuracy vs Particle Count")
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(actual_counts)
+    ax.set_xticklabels([str(n) for n in actual_counts])
+    ax.legend()
+    fig.tight_layout()
+    _save_fig(fig, output_dir, "nbody_accuracy_vs_N")
+
+
+def plot_pse_accuracy_vs_boxsize(output_dir: Path):
+    """PSE periodic: relative error vs box size for N=16, 32, 64."""
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, data_cfg = _load_model_and_config(device)
+    if model is None:
+        return
+
+    box_sizes = [16, 24, 32, 48, 64, 96, 128]
+    particle_counts = [16, 32, 64]
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for N, color in zip(particle_counts, colors):
+        means, stds = [], []
+        for box_size in box_sizes:
+            print(f"  PSE N={N}, L={box_size} ...")
+            m, s = _evaluate_cloud(model, device, "pse_periodic", N, data_cfg,
+                                    num_samples=20, seed=123 + N + int(box_size),
+                                    box_size_override=box_size)
+            means.append(m)
+            stds.append(s)
+            print(f"    rel_error = {m:.4f} +/- {s:.4f}")
+
+        ax.errorbar(box_sizes, means, yerr=stds, fmt="s-", capsize=4,
+                    linewidth=2, markersize=7, color=color, label=f"N={N}")
+
+    ax.axvline(32.0, color="green", ls="--", alpha=0.7, label="Training box size (L=32)")
+    ax.set_xlabel("Box size (L)")
+    ax.set_ylabel("Mean relative error")
+    ax.set_title("PSE Periodic: Accuracy vs Box Size")
+    ax.legend()
+    fig.tight_layout()
+    _save_fig(fig, output_dir, "pse_accuracy_vs_boxsize")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate plots from training results")
     parser.add_argument("--run-name", type=str, help="Single run to plot")
@@ -349,9 +629,19 @@ def main():
             "error_distributions": plot_error_distributions,
         }
 
+        # Plots that only need output_dir (they load the model themselves)
+        live_eval_plots = {
+            "tb_training_curves": plot_tb_training_curves,
+            "pair_sweep_both_geometries": plot_pair_sweep_both_geometries,
+            "nbody_accuracy_vs_N": plot_nbody_accuracy_vs_N,
+            "pse_accuracy_vs_boxsize": plot_pse_accuracy_vs_boxsize,
+        }
+
         if args.plot:
             if args.plot in single_run_plots:
                 single_run_plots[args.plot](results_dir, output_dir)
+            elif args.plot in live_eval_plots:
+                live_eval_plots[args.plot](output_dir)
             elif args.plot in ("generalization_matrix", "model_comparison"):
                 print(f"  {args.plot} requires --compare mode")
             else:
@@ -359,6 +649,8 @@ def main():
         else:
             for name, fn in single_run_plots.items():
                 fn(results_dir, output_dir)
+            for name, fn in live_eval_plots.items():
+                fn(output_dir)
 
     if args.compare:
         results_dirs = [root / name for name in args.compare]

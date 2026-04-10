@@ -1,9 +1,7 @@
-"""SchNet-style GNN model for learning the hydrodynamic mobility operator.
+"""SchNet-based graph network for hydrodynamics (experimental).
 
-Wraps TorchMD-NET's TorchMD_GN backbone to predict per-particle displacements
-from forces and positions. The backbone processes only positions to produce
-per-node features, then a MobilityHead predicts displacement = M(X) · F,
-enforcing linearity in forces by construction.
+This model was explored during development but not fully completed.
+The forward method has a known issue -- see comments in forward().
 """
 
 import torch.nn as nn

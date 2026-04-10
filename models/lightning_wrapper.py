@@ -7,9 +7,7 @@ Works with HydroTorchMD_ET, HydroTorchMD_TN, and HydroTorchMD_GN.
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import (
-    ReduceLROnPlateau, SequentialLR, LinearLR, CosineAnnealingWarmRestarts,
-)
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingWarmRestarts
 
 try:
     import pytorch_lightning as pl

@@ -1,12 +1,9 @@
-"""Mobility tensor head shared by all model architectures (ET, TN, GN).
+"""Shared mobility output head used by the ET and GN models.
 
-Learns two scalar coefficients (alpha, beta) per particle pair from backbone
-node features, then computes displacement linearly from forces:
-
-    displacement_i = sum_j [alpha_ij * F_j + beta_ij * (r_hat_ij . F_j) * r_hat_ij]
-
-Self-mobility is learned implicitly through self-loop edges (i->i),
-where alpha learns the self-mobility coefficient.
+Predicts two scalar coefficients (alpha, beta) per edge from concatenated
+node features, then computes displacement as a sum of isotropic and
+anisotropic terms. Note: the TensorNet model uses its own inline output
+head with RBF features instead of this class.
 """
 
 import torch
@@ -29,11 +26,6 @@ class MobilityHead(nn.Module):
         nn.init.zeros_(self.edge_mlp[-1].weight)
         nn.init.zeros_(self.edge_mlp[-1].bias)
         self.cutoff = CosineCutoff(cutoff_lower=0.0, cutoff_upper=cutoff_upper)
-
-        # Self-mobility baseline: dR_i ≈ self_mobility * F_i.
-        # Initialised to 1.0 (the theoretical value for viscosity=1/(6π), a=1).
-        # The edge MLP learns corrections on top of this baseline.
-        self.self_mobility = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, node_features, edge_index, edge_weight, edge_vec, forces):
         src, dst = edge_index

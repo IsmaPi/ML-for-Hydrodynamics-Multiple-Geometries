@@ -1,9 +1,8 @@
-"""Equivariant Transformer model for learning the hydrodynamic mobility operator.
+"""Equivariant Transformer model for hydrodynamics (experimental).
 
-Wraps TorchMD-NET's TorchMD_ET backbone to predict per-particle displacements
-from forces and positions. The backbone processes only positions to produce
-per-node features, then a MobilityHead predicts displacement = M(X) · F,
-enforcing linearity in forces by construction.
+Uses a shared MobilityHead for the output. This architecture was explored
+during development but not used for the final results. The TensorNet model
+(torchmd_tn.py) was chosen instead for its tensor-Oseen correspondence.
 """
 
 import torch.nn as nn
